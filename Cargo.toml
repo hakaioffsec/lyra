@@ -1,0 +1,51 @@
+[package]
+name = "lyra"
+version = "0.1.0"
+authors = ["Lyra Contributors"]
+edition = "2021"
+license = "MIT"
+description = "LLVM-based code obfuscator for Rust - protect your binaries from reverse engineering"
+readme = "README.md"
+keywords = [
+    "obfuscation",
+    "llvm",
+    "security",
+    "reverse-engineering",
+    "protection",
+]
+categories = ["development-tools", "command-line-utilities"]
+
+[[bin]]
+name = "lyra"
+path = "src/main.rs"
+
+[[bin]]
+name = "lyra_linker"
+path = "src/bin/lyra_linker.rs"
+
+[[bin]]
+name = "lyra_wrapper"
+path = "src/bin/lyra_wrapper.rs"
+
+[dependencies]
+anyhow = "1.0"
+clap = { version = "4.5", features = ["derive"] }
+rand = "0.9.2"
+# inkwell's default feature `target-all` enables init functions for every
+# LLVM target (MIPS, Lanai, Sparc, AMDGPU, …). The prebuilt LLVM 22.1.4
+# MSVC bundle only ships a subset of targets, so link fails on
+# LLVMInitializeMipsTarget, LLVMInitializeLanaiTarget, etc. We turn off
+# default features and enable only the targets present in the prebuilt.
+inkwell = { version = "0.9", default-features = false, features = [
+    "llvm22-1",
+    "target-x86",
+    "target-arm",
+    "target-aarch64",
+    "target-riscv",
+    "target-bpf",
+    "target-nvptx",
+    "target-webassembly",
+] }
+either = "1.13"
+llvm-sys = "221"
+cc = "1"

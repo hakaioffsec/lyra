@@ -1,0 +1,8 @@
+[package]
+name = "test_dll"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "test_dll"
+crate-type = ["cdylib"]

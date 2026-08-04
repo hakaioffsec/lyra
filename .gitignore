@@ -1,0 +1,58 @@
+# Rust build artifacts
+target/
+
+# LLVM bundles (downloaded/built locally; too large for git)
+llvm-project/
+llvm-project-22/
+
+# IDE and editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Debug files
+*.pdb
+*.dSYM/
+
+# Backup files
+*.bak
+*.orig
+
+# Test output
+test_output/
+*.ll
+*.bc
+*.o
+*.obj
+
+# test_project stray build outputs
+test_project/*.ll
+test_project/*.o
+test_project/*.s
+test_project/*.pdb
+test_project/*.exe
+
+# test_dll_project / test_dll_loader stray build outputs
+test_dll_project/*.ll
+test_dll_project/*.o
+test_dll_project/*.s
+test_dll_project/*.pdb
+test_dll_project/*.dll
+test_dll_project/*.lib
+test_dll_loader/*.pdb
+
+# OS specific
+Thumbs.db
+.Spotlight-V100
+.Trashes
+
+# Temporary files
+*.tmp
+*.temp
+build_log.txt
+
+# Claude local settings (opt-in per-developer)
+.claude/
