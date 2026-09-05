@@ -116,6 +116,44 @@ optimizer, so the passes survive to the final binary. LTO and
 codegen-units are forced off and to one respectively so that each crate
 has exactly one main object to substitute.
 
+## CI and regression checks
+
+GitHub Actions builds and exercises Lyra natively on Linux x86-64, macOS
+ARM64, and Windows x86-64 MSVC. Pull requests and pushes to `main` run the
+smoke suite; scheduled and manually dispatched runs exercise individual
+passes and the combined pipeline at multiple fixed seeds.
+
+CI pins Rust **1.98.1** and LLVM **22**. Newer nightly compilers can emit
+LLVM 23 IR, which LLVM 22 cannot read. All three sibling binaries are
+built together. Formatting and Cargo tests run before the runtime checks.
+
+The runtime checks copy `test_project` and `test_dll_project` into isolated
+directories, build plain references, and compare actual execution against
+explicit expected results and the obfuscated artifacts. They verify LLVM
+IR, encrypted-string absence on disk, constructor-time decryption, and
+typed calls across the shared-library boundary. Build success alone is
+not a passing runtime check.
+
+Run the same checks locally after installing the prerequisites:
+
+```sh
+rustup toolchain install 1.98.1 --profile minimal --component rustfmt
+export RUSTUP_TOOLCHAIN=1.98.1
+# Set LLVM_SYS_221_PREFIX to your LLVM 22 installation.
+cargo fmt --all -- --check
+cargo build --locked --bins
+cargo test --locked --bins
+python3 scripts/ci_smoke.py --suite smoke --output "$(pwd)/target/ci-local"
+```
+
+On Windows use `python` and PowerShell environment syntax
+(`$env:RUSTUP_TOOLCHAIN = "1.98.1"`). Use `--suite full` for each pass
+alone and all passes together at seeds 0, 1, and 42. The output directory
+must be new. `report.json`, `junit.xml`, command logs, and failed build
+intermediates support diagnosis; hosted jobs upload bounded failure
+evidence and reports even when a check fails. Local execution verifies
+only the host platform, not the other CI targets.
+
 ## Roadmap
 
 See ROADMAP.md for planned passes, ranked by reverse-engineering impact

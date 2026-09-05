@@ -30,14 +30,13 @@
 // for the lyra "old asm-stub" architecture.
 
 use anyhow::{Context as _, Result};
-use inkwell::AddressSpace;
 use inkwell::comdat::Comdat;
 use inkwell::context::Context;
 use inkwell::module::{Linkage, Module};
 use inkwell::values::{
-    ArrayValue, AsValueRef, BasicValueEnum, FunctionValue, GlobalValue,
-    UnnamedAddress,
+    ArrayValue, AsValueRef, BasicValueEnum, FunctionValue, GlobalValue, UnnamedAddress,
 };
+use inkwell::AddressSpace;
 use inkwell::GlobalVisibility;
 use rand::{Rng, RngCore};
 use std::ptr::null_mut;
@@ -89,13 +88,7 @@ pub fn apply<'ctx>(context: &'ctx Context, module: &mut Module<'ctx>) -> Result<
                 if let Some(bytes) = string_bytes(&arr) {
                     if bytes.len() > 1 {
                         if let Some(rec) = encrypt_array_global(
-                            context,
-                            module,
-                            global,
-                            &arr,
-                            bytes,
-                            None,
-                            &mut rng,
+                            context, module, global, &arr, bytes, None, &mut rng,
                         )? {
                             encrypted.push(rec);
                             array_count += 1;
@@ -128,7 +121,11 @@ pub fn apply<'ctx>(context: &'ctx Context, module: &mut Module<'ctx>) -> Result<
                         .map(|_| {
                             let mut b = [0u8; 1];
                             rng.fill_bytes(&mut b);
-                            if b[0] == 0 { 0xA5 } else { b[0] }
+                            if b[0] == 0 {
+                                0xA5
+                            } else {
+                                b[0]
+                            }
                         })
                         .collect();
                     let mut ciphertext = bytes.to_vec();
@@ -226,7 +223,10 @@ fn is_candidate_global<'ctx>(g: &GlobalValue<'ctx>) -> bool {
             return false;
         }
         // Skip our own key globals from prior runs
-        if name.starts_with("lyra_str_key") || name.starts_with("__lyra_") || name.starts_with("lyra_decrypt_") {
+        if name.starts_with("lyra_str_key")
+            || name.starts_with("__lyra_")
+            || name.starts_with("lyra_decrypt_")
+        {
             return false;
         }
     }
@@ -346,7 +346,11 @@ fn encrypt_array_global<'ctx>(
         .map(|_| {
             let mut b = [0u8; 1];
             rng.fill_bytes(&mut b);
-            if b[0] == 0 { 0xA5 } else { b[0] }
+            if b[0] == 0 {
+                0xA5
+            } else {
+                b[0]
+            }
         })
         .collect();
     let mut ciphertext = bytes.to_vec();
@@ -462,9 +466,7 @@ fn build_decrypt_function<'ctx>(
         .into_int_value();
 
     let x = builder.build_xor(ch, k, "x").context("xor failed")?;
-    builder
-        .build_store(src_gep, x)
-        .context("store x failed")?;
+    builder.build_store(src_gep, x).context("store x failed")?;
 
     let one = i32_ty.const_int(1, false);
     let nxt = builder
@@ -479,9 +481,7 @@ fn build_decrypt_function<'ctx>(
 
     // loop_exit: ret void
     builder.position_at_end(loop_exit);
-    builder
-        .build_return(None)
-        .context("ret void failed")?;
+    builder.build_return(None).context("ret void failed")?;
 
     Ok(f)
 }

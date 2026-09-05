@@ -38,7 +38,10 @@ use rand::SeedableRng;
 pub fn for_pass(pass_name: &str, module_name: &str, module_source: &str) -> StdRng {
     if let Ok(raw) = std::env::var("LYRA_SEED") {
         if let Ok(master) = raw.parse::<u64>() {
-            let input = format!("{}::{}::{}::{}", master, pass_name, module_name, module_source);
+            let input = format!(
+                "{}::{}::{}::{}",
+                master, pass_name, module_name, module_source
+            );
             return StdRng::seed_from_u64(fnv1a64(&input));
         }
     }

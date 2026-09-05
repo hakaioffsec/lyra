@@ -139,8 +139,10 @@ fn collect_targets<'ctx>(function: &FunctionValue<'ctx>) -> Vec<InstructionValue
                 | InstructionOpcode::Xor
                 | InstructionOpcode::And
                 | InstructionOpcode::Or => {
-                    let (Some(Operand::Value(BasicValueEnum::IntValue(v))), Some(Operand::Value(BasicValueEnum::IntValue(_)))) =
-                        (inst.get_operand(0), inst.get_operand(1))
+                    let (
+                        Some(Operand::Value(BasicValueEnum::IntValue(v))),
+                        Some(Operand::Value(BasicValueEnum::IntValue(_))),
+                    ) = (inst.get_operand(0), inst.get_operand(1))
                     else {
                         continue;
                     };
@@ -148,11 +150,11 @@ fn collect_targets<'ctx>(function: &FunctionValue<'ctx>) -> Vec<InstructionValue
                         continue;
                     }
                 }
-                InstructionOpcode::FAdd
-                | InstructionOpcode::FSub
-                | InstructionOpcode::FMul => {
-                    let (Some(Operand::Value(BasicValueEnum::FloatValue(_))), Some(Operand::Value(BasicValueEnum::FloatValue(_)))) =
-                        (inst.get_operand(0), inst.get_operand(1))
+                InstructionOpcode::FAdd | InstructionOpcode::FSub | InstructionOpcode::FMul => {
+                    let (
+                        Some(Operand::Value(BasicValueEnum::FloatValue(_))),
+                        Some(Operand::Value(BasicValueEnum::FloatValue(_))),
+                    ) = (inst.get_operand(0), inst.get_operand(1))
                     else {
                         continue;
                     };
@@ -200,20 +202,15 @@ fn substitute<'ctx>(
                 _ => return Ok(false),
             }?;
             unsafe {
-                llvm_sys::core::LLVMReplaceAllUsesWith(
-                    inst.as_value_ref(),
-                    result.as_value_ref(),
-                );
+                llvm_sys::core::LLVMReplaceAllUsesWith(inst.as_value_ref(), result.as_value_ref());
                 llvm_sys::core::LLVMInstructionEraseFromParent(inst.as_value_ref());
             }
         }
         InstructionOpcode::FAdd | InstructionOpcode::FSub | InstructionOpcode::FMul => {
-            let Some(Operand::Value(BasicValueEnum::FloatValue(lhs))) = inst.get_operand(0)
-            else {
+            let Some(Operand::Value(BasicValueEnum::FloatValue(lhs))) = inst.get_operand(0) else {
                 return Ok(false);
             };
-            let Some(Operand::Value(BasicValueEnum::FloatValue(rhs))) = inst.get_operand(1)
-            else {
+            let Some(Operand::Value(BasicValueEnum::FloatValue(rhs))) = inst.get_operand(1) else {
                 return Ok(false);
             };
             let result = match opcode {
@@ -223,10 +220,7 @@ fn substitute<'ctx>(
                 _ => return Ok(false),
             }?;
             unsafe {
-                llvm_sys::core::LLVMReplaceAllUsesWith(
-                    inst.as_value_ref(),
-                    result.as_value_ref(),
-                );
+                llvm_sys::core::LLVMReplaceAllUsesWith(inst.as_value_ref(), result.as_value_ref());
                 llvm_sys::core::LLVMInstructionEraseFromParent(inst.as_value_ref());
             }
         }
