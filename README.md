@@ -156,8 +156,11 @@ only the host platform, not the other CI targets.
 
 ## Roadmap
 
-See ROADMAP.md for planned passes, ranked by reverse-engineering impact
-with effort and LOC estimates.
+See ROADMAP.md for current pass status, correctness gates, proposed techniques,
+and evidence-based development milestones.
+
+For the Linux workstation setup and next correctness work, see the
+[development handoff](docs/DEVELOPMENT_HANDOFF.md).
 
 ## License
 
