@@ -1,4 +1,4 @@
-// Copyright (c) 2025 Hakai Offensive Security. Licensed under GNU GPLv3 (see LICENSE).
+// Copyright (c) 2025 Hakai Offensive Security. Licensed under GNU GPL version 3 or later (see LICENSE).
 //
 // A tiny cdylib used by the harness in `tools/dll_loader.rs` to verify
 // that lyra's obfuscation passes produce a DLL that:

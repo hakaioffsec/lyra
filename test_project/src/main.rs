@@ -2,7 +2,8 @@
 //
 // This program is free software: you can redistribute it and/or modify it
 // under the terms of the GNU General Public License as published by the
-// Free Software Foundation, version 3. See the LICENSE file for details.
+// Free Software Foundation, either version 3 or (at your option) any later
+// version. See the LICENSE file for details.
 
 use std::f64::consts::PI;
 use std::hint::black_box;

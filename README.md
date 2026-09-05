@@ -123,4 +123,10 @@ with effort and LOC estimates.
 
 ## License
 
-GNU General Public License v3.0. See LICENSE.
+Lyra is licensed under the **GNU General Public License, version 3 or later**
+(`GPL-3.0-or-later`). See [LICENSE](LICENSE) for the complete license text.
+
+The [generated-output exception](LICENSE-EXCEPTION.md) allows independent
+programs processed by Lyra to retain their own licenses, including runtime
+support code emitted or inserted by Lyra. It does not exempt Lyra itself
+or distributed modifications of Lyra from GPL requirements.

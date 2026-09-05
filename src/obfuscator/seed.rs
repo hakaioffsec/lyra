@@ -2,7 +2,8 @@
 //
 // This program is free software: you can redistribute it and/or modify it
 // under the terms of the GNU General Public License as published by the
-// Free Software Foundation, version 3. See the LICENSE file for details.
+// Free Software Foundation, either version 3 or (at your option) any later
+// version. See LICENSE and the generated-output permission in LICENSE-EXCEPTION.md.
 //
 // Per-build seed management.
 //
