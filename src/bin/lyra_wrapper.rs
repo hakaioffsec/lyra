@@ -122,9 +122,8 @@ fn main() {
         );
     }
 
-    let obf_dir = PathBuf::from(
-        env::var("LYRA_OBF_DIR").expect("lyra_wrapper: LYRA_OBF_DIR not set"),
-    );
+    let obf_dir =
+        PathBuf::from(env::var("LYRA_OBF_DIR").expect("lyra_wrapper: LYRA_OBF_DIR not set"));
     fs::create_dir_all(&obf_dir).ok();
 
     let lyra_exe = env::var("LYRA_LYRA_EXE").expect("lyra_wrapper: LYRA_LYRA_EXE not set");
@@ -247,9 +246,7 @@ fn handle_lib_crate(
     let rlib_path = match rlib_path {
         Some(p) => p,
         None => {
-            eprintln!(
-                "[lyra_wrapper] could not locate rlib for '{crate_name}' in '{out_dir}'"
-            );
+            eprintln!("[lyra_wrapper] could not locate rlib for '{crate_name}' in '{out_dir}'");
             return 1;
         }
     };
@@ -331,8 +328,7 @@ fn handle_bin_crate(
     }
 
     // Phase B
-    let shim = env::var("LYRA_LINKER_SHIM")
-        .expect("lyra_wrapper: LYRA_LINKER_SHIM not set");
+    let shim = env::var("LYRA_LINKER_SHIM").expect("lyra_wrapper: LYRA_LINKER_SHIM not set");
 
     let mut phase_b: Vec<String> = rustc_args.to_vec();
     phase_b.push("-C".to_string());
@@ -548,7 +544,10 @@ fn run_obfuscate_subprocess(
     match cmd.status() {
         Ok(s) if s.success() => true,
         Ok(s) => {
-            eprintln!("[lyra_wrapper] obfuscate subprocess exit {}", s.code().unwrap_or(-1));
+            eprintln!(
+                "[lyra_wrapper] obfuscate subprocess exit {}",
+                s.code().unwrap_or(-1)
+            );
             false
         }
         Err(e) => {

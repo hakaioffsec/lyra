@@ -228,7 +228,9 @@ fn main() -> Result<()> {
         passes.push("MBA");
     }
     if passes.is_empty() {
-        println!("[*] Passes : none (use --string-enc, --shuffle-blocks, --indirect-branch, --mba)");
+        println!(
+            "[*] Passes : none (use --string-enc, --shuffle-blocks, --indirect-branch, --mba)"
+        );
     } else {
         println!("[*] Passes : {}", passes.join(", "));
     }
@@ -452,9 +454,7 @@ fn run_native_flow(args: &Args, temp_dir: &Path) -> Result<()> {
     //
     // MSVC toolchain:  `<name>.dll.lib`
     // GNU toolchain:   `lib<name>.dll.a`
-    if (kind == CrateKind::Cdylib || kind == CrateKind::Dylib)
-        && target.contains("windows")
-    {
+    if (kind == CrateKind::Cdylib || kind == CrateKind::Dylib) && target.contains("windows") {
         let is_gnu = target.contains("gnu");
         let candidates: &[String] = &[
             // MSVC
@@ -466,7 +466,11 @@ fn run_native_flow(args: &Args, temp_dir: &Path) -> Result<()> {
         let import_src = release_dir.and_then(|dir| {
             candidates.iter().find_map(|name| {
                 let p = dir.join(name);
-                if p.exists() { Some(p) } else { None }
+                if p.exists() {
+                    Some(p)
+                } else {
+                    None
+                }
             })
         });
         if let Some(src) = import_src {
@@ -569,10 +573,7 @@ fn find_llvm_project_bin() -> Result<PathBuf> {
             .join("build")
             .join("bin"),
         // Side-by-side install layouts.
-        exe_dir
-            .join("llvm-project-22")
-            .join("build")
-            .join("bin"),
+        exe_dir.join("llvm-project-22").join("build").join("bin"),
         exe_dir.join("llvm-project").join("build").join("bin"),
         // CWD fallbacks.
         PathBuf::from("llvm-project-22/build/bin"),
@@ -717,9 +718,7 @@ fn detect_default_target(project_dir: &Path, kind: CrateKind) -> Result<String> 
                 let name = &stdout[nstart..nstart + end_rel];
                 match (&found, kind) {
                     (Some(existing), CrateKind::Bin) if existing != name => {
-                        anyhow::bail!(
-                            "project has multiple bin targets; please pass --bin <NAME>"
-                        );
+                        anyhow::bail!("project has multiple bin targets; please pass --bin <NAME>");
                     }
                     _ => {
                         found = Some(name.to_string());
@@ -824,7 +823,11 @@ fn find_self_bin(name: &str) -> Result<PathBuf> {
     let in_cargo_target_dir = matches!(
         dir.file_name().and_then(|s| s.to_str()),
         Some("debug") | Some("release")
-    ) && dir.ancestors().skip(1).take(2).any(|p| p.ends_with("target"));
+    ) && dir
+        .ancestors()
+        .skip(1)
+        .take(2)
+        .any(|p| p.ends_with("target"));
 
     if in_cargo_target_dir {
         anyhow::bail!(
@@ -916,9 +919,7 @@ fn obfuscate_ir_file(input_path: &Path, output_path: &Path, flags: ObfuscateFlag
             .context("Indirect branch failed")?;
     }
     if flags.mba {
-        obfuscator
-            .apply_mba()
-            .context("MBA failed")?;
+        obfuscator.apply_mba().context("MBA failed")?;
     }
 
     obfuscator

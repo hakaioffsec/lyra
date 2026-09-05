@@ -91,10 +91,7 @@ fn shuffle_function_blocks<'ctx>(function: &FunctionValue<'ctx>, rng: &mut impl 
         return 0;
     };
 
-    let mut others: Vec<BasicBlock<'ctx>> = blocks
-        .into_iter()
-        .filter(|b| *b != entry)
-        .collect();
+    let mut others: Vec<BasicBlock<'ctx>> = blocks.into_iter().filter(|b| *b != entry).collect();
 
     // Capture the original order so we can count how many positions
     // actually changed (Fisher-Yates can by chance produce the original

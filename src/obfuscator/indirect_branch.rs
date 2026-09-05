@@ -130,7 +130,8 @@ fn transform_function<'ctx>(
 ) -> Result<Option<Stats>> {
     // Gather all `br` terminators (conditional + unconditional). Skip
     // `switch`, `indirectbr`, `ret`, `invoke`, `unreachable`, etc.
-    let mut uncond_brs: Vec<(BasicBlock<'ctx>, InstructionValue<'ctx>, BasicBlock<'ctx>)> = Vec::new();
+    let mut uncond_brs: Vec<(BasicBlock<'ctx>, InstructionValue<'ctx>, BasicBlock<'ctx>)> =
+        Vec::new();
     let mut cond_brs: Vec<(
         BasicBlock<'ctx>,
         InstructionValue<'ctx>,

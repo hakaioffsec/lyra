@@ -1,0 +1,150 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: ['**']
+  schedule:
+    - cron: '23 5 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  RUSTUP_TOOLCHAIN: '1.98.1'
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: '1'
+  CI_SUITE: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 'full' || 'smoke' }}
+
+jobs:
+  native:
+    name: Native (${{ matrix.platform }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-x86_64
+            runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+          - platform: macos-arm64
+            runner: macos-15
+            target: aarch64-apple-darwin
+          - platform: windows-x86_64-msvc
+            runner: windows-2022
+            target: x86_64-pc-windows-msvc
+    env:
+      LYRA_CI_EXPECTED_TARGET: ${{ matrix.target }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check out public source
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+
+      - name: Install Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+
+      - name: Install and verify native toolchains
+        timeout-minutes: 45
+        run: |
+          mkdir -p "$RUNNER_TEMP/lyra-ci-logs"
+          python scripts/setup_ci.py 2>&1 | tee "$RUNNER_TEMP/lyra-ci-logs/setup.log"
+
+      - name: Cache Cargo downloads only
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: cargo-downloads-v1-${{ matrix.platform }}-rust-1.98.1-llvm-22-${{ hashFiles('Cargo.lock', 'test_project/Cargo.lock', 'test_dll_project/Cargo.lock') }}
+
+      - name: Fetch locked dependencies
+        timeout-minutes: 15
+        run: |
+          cargo fetch --locked --target "$LYRA_CI_EXPECTED_TARGET" 2>&1 | tee "$RUNNER_TEMP/lyra-ci-logs/fetch-root.log"
+          cargo fetch --locked --target "$LYRA_CI_EXPECTED_TARGET" --manifest-path test_project/Cargo.toml 2>&1 | tee "$RUNNER_TEMP/lyra-ci-logs/fetch-bin.log"
+          cargo fetch --locked --target "$LYRA_CI_EXPECTED_TARGET" --manifest-path test_dll_project/Cargo.toml 2>&1 | tee "$RUNNER_TEMP/lyra-ci-logs/fetch-dll.log"
+
+      - name: Check Rust formatting
+        if: matrix.platform == 'linux-x86_64'
+        timeout-minutes: 5
+        run: cargo fmt --all -- --check 2>&1 | tee "$RUNNER_TEMP/lyra-ci-logs/fmt.log"
+
+      - name: Build all native binaries
+        timeout-minutes: 20
+        run: cargo build --locked --bins 2>&1 | tee "$RUNNER_TEMP/lyra-ci-logs/build.log"
+
+      - name: Test all native binaries
+        timeout-minutes: 15
+        run: cargo test --locked --bins 2>&1 | tee "$RUNNER_TEMP/lyra-ci-logs/test.log"
+
+      - name: Exercise public projects
+        timeout-minutes: 60
+        run: python scripts/ci_smoke.py --suite "$CI_SUITE" --output "$RUNNER_TEMP/lyra-smoke" 2>&1 | tee "$RUNNER_TEMP/lyra-ci-logs/smoke.log"
+
+      - name: Summarize results
+        if: always()
+        timeout-minutes: 2
+        run: |
+          python - <<'PY'
+          import collections
+          import json
+          import os
+          from pathlib import Path
+
+          report = Path(os.environ['RUNNER_TEMP']) / 'lyra-smoke/report.json'
+          with Path(os.environ['GITHUB_STEP_SUMMARY']).open('a', encoding='utf-8') as summary:
+              summary.write(f"## {os.environ['LYRA_CI_EXPECTED_TARGET']} ({os.environ['CI_SUITE']})\n\n")
+              if report.is_file():
+                  data = json.loads(report.read_text(encoding='utf-8'))
+                  counts = collections.Counter(item['status'] for item in data['results'])
+                  summary.write(f"Passed: **{counts['passed']}**; failed: **{counts['failed']}**.\n\n")
+                  summary.write('Versions: `' + json.dumps(data['versions'], sort_keys=True) + '`\n')
+              else:
+                  summary.write('Smoke report unavailable: inspect setup/build/test logs and the failed step.\n')
+          PY
+
+      - name: Upload diagnostic evidence
+        if: always()
+        timeout-minutes: 10
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ci-${{ matrix.platform }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/lyra-ci-logs/
+            ${{ runner.temp }}/lyra-smoke/
+            !${{ runner.temp }}/lyra-smoke/**/target/**
+            !${{ runner.temp }}/lyra-smoke/**/.git/**
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 6
+
+  required:
+    name: CI required
+    if: always()
+    needs: [native]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require every native platform to succeed
+        env:
+          NATIVE_RESULT: ${{ needs.native.result }}
+        run: |
+          if [ "$NATIVE_RESULT" != success ]; then
+            echo "Native matrix did not fully succeed: $NATIVE_RESULT"
+            exit 1
+          fi
+          echo 'All three native platforms passed.' >> "$GITHUB_STEP_SUMMARY"
