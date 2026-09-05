@@ -119,7 +119,7 @@ has exactly one main object to substitute.
 ## CI and regression checks
 
 GitHub Actions builds and exercises Lyra natively on Linux x86-64, macOS
-ARM64, and Windows x86-64 MSVC. Pull requests and branch pushes run the
+ARM64, and Windows x86-64 MSVC. Pull requests and pushes to `main` run the
 smoke suite; scheduled and manually dispatched runs exercise individual
 passes and the combined pipeline at multiple fixed seeds.
 

@@ -9,6 +9,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tarfile
 import urllib.request
 
 
@@ -149,10 +150,22 @@ def install_windows(temp: Path) -> Path:
     archive = temp / "llvm-22.1.4.tar.xz"
     download(WINDOWS_LLVM_URL, archive, WINDOWS_LLVM_SHA256)
     prefix = temp / "llvm-22"
-    prefix.mkdir()
-    # Git Bash's GNU tar interprets D: as a remote host; use native Windows tar.
-    native_tar = Path(os.environ["SystemRoot"]) / "System32/tar.exe"
-    run(str(native_tar), "-xf", str(archive), "-C", str(prefix), "--strip-components=1")
+    unpacked = temp / "llvm-unpack"
+    unpacked.mkdir()
+    # Avoid Git tar's drive-letter parsing and native tar's stalled extraction.
+    # Python's data filter also rejects paths and links escaping the destination.
+    print("Extracting verified LLVM archive with Python", flush=True)
+    with tarfile.open(archive, mode="r:xz") as bundle:
+        for index, member in enumerate(bundle, 1):
+            bundle.extract(member, unpacked, filter="data")
+            if index % 1000 == 0:
+                print(f"Extracted {index} LLVM archive entries", flush=True)
+    roots = list(unpacked.iterdir())
+    if len(roots) != 1 or not roots[0].is_dir():
+        raise RuntimeError("Expected one top-level LLVM bundle directory")
+    roots[0].rename(prefix)
+    unpacked.rmdir()
+    print("LLVM archive extraction complete", flush=True)
     archive.unlink()
     llvm_config = prefix / "bin/llvm-config.exe"
     system_libs = shlex.split(run(str(llvm_config), "--link-static", "--system-libs", capture=True), posix=False)
