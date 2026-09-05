@@ -1,4 +1,6 @@
-// Copyright (c) 2025 Hakai Offensive Security. Licensed under GNU GPLv3 (see LICENSE).
+// Copyright (c) 2025 Hakai Offensive Security.
+// Licensed under GNU GPL version 3 or later (see LICENSE).
+// Generated-output permission: see LICENSE-EXCEPTION.md.
 //
 // lyra_linker - linker shim invoked by rustc.
 //
