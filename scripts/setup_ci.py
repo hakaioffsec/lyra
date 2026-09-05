@@ -150,7 +150,9 @@ def install_windows(temp: Path) -> Path:
     download(WINDOWS_LLVM_URL, archive, WINDOWS_LLVM_SHA256)
     prefix = temp / "llvm-22"
     prefix.mkdir()
-    run("tar.exe", "-xf", str(archive), "-C", str(prefix), "--strip-components=1")
+    # Git Bash's GNU tar interprets D: as a remote host; use native Windows tar.
+    native_tar = Path(os.environ["SystemRoot"]) / "System32/tar.exe"
+    run(str(native_tar), "-xf", str(archive), "-C", str(prefix), "--strip-components=1")
     archive.unlink()
     llvm_config = prefix / "bin/llvm-config.exe"
     system_libs = shlex.split(run(str(llvm_config), "--link-static", "--system-libs", capture=True), posix=False)
