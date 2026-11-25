@@ -146,6 +146,10 @@ an empty `xml2s.lib` in `llvm-project-22/build/lib`. Then:
 $env:LLVM_SYS_221_PREFIX = "$(Get-Location)\llvm-project-22\build"
 ```
 
+This bundle uses the static MSVC runtime (`/MT`). The C++ outlining shim
+uses the same runtime; mixing it with `/MD` produces `LNK2038` runtime
+mismatches and duplicate C/C++ runtime symbols.
+
 ## Build
 
 ```bash

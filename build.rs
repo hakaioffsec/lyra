@@ -57,6 +57,12 @@ fn main() {
         .include(&include)
         .file("src/obfuscator/block_outline.cpp");
     let msvc = build.get_compiler().is_like_msvc();
+    if msvc {
+        // The supported Windows LLVM bundle uses the static CRT (/MT).
+        // cc otherwise follows Rust's default /MD and mixes two C++ runtimes
+        // when this shim is linked with LLVM's static libraries.
+        build.static_crt(true);
+    }
     let flags = llvm_config(&config, "--cxxflags");
     // Windows llvm-config can emit quoted native paths. Forward slashes retain
     // their meaning to MSVC/clang-cl without POSIX shell unescaping backslashes.
