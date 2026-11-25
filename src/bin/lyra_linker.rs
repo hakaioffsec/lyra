@@ -4,18 +4,17 @@
 //
 // lyra_linker - linker shim invoked by rustc.
 //
-// rustc calls us with its standard linker command line. We identify any
-// codegen-unit object files belonging to crates in LYRA_OBFUSCATE_CRATES
-// and replace them with the pre-built obfuscated objects at
-// $LYRA_OBF_DIR/<crate>.obf.o (or the paths given in LYRA_OBFUSCATED_OBJS).
-// Then we invoke the real linker ($LYRA_REAL_LINKER).
+// rustc calls us with its standard linker command line. The wrapper's scoped
+// callback transforms the already-emitted IR before we substitute the selected
+// crate's object. Then we invoke the original linker (LYRA_REAL_LINKER).
 //
 // Environment variables:
 //   LYRA_REAL_LINKER         absolute path to the real linker (e.g. link.exe)
 //   LYRA_OBFUSCATE_CRATES    comma-separated list of crate names
 //   LYRA_OBF_DIR             directory containing <crate>.obf.o artefacts
-//   LYRA_OBFUSCATED_OBJS     optional pipe-separated "crate=objpath" list
-//                            (legacy / single-crate mode)
+//   LYRA_LINK_CODEGEN        wrapper executable for the link-time callback
+//   LYRA_LINK_STDOUT         callback output relayed by the wrapper after rustc
+//   LYRA_LINK_CRATE          the current linked crate, which must be replaced
 //   LYRA_DEBUG               if set, print what we're doing
 
 use std::collections::HashMap;
@@ -25,11 +24,28 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{exit, Command};
 
+#[path = "../audit.rs"]
+mod audit;
+
 fn main() {
     let raw_args: Vec<String> = env::args().skip(1).collect();
     let debug = env::var("LYRA_DEBUG").is_ok();
 
     let real_linker = env::var("LYRA_REAL_LINKER").expect("lyra_linker: LYRA_REAL_LINKER not set");
+    let codegen = env::var("LYRA_LINK_CODEGEN").expect("lyra_linker: missing codegen callback");
+    let linked_crate = env::var("LYRA_LINK_CRATE").expect("lyra_linker: missing linked crate");
+    let output = fs::File::create(
+        env::var("LYRA_LINK_STDOUT").expect("lyra_linker: missing codegen output path"),
+    )
+    .expect("lyra_linker: create codegen output");
+    let generated = Command::new(codegen)
+        .arg("__link-codegen")
+        .stdout(output)
+        .status()
+        .expect("lyra_linker: start codegen callback");
+    if !generated.success() {
+        exit(generated.code().unwrap_or(1));
+    }
 
     let crates: Vec<String> = env::var("LYRA_OBFUSCATE_CRATES")
         .map(|s| s.split(',').map(|s| s.trim().to_string()).collect())
@@ -43,14 +59,6 @@ fn main() {
             let p = d.join(format!("{c}.obf.o"));
             if p.exists() {
                 obj_map.insert(c.clone(), p);
-            }
-        }
-    }
-    if let Ok(s) = env::var("LYRA_OBFUSCATED_OBJS") {
-        for entry in s.split('|') {
-            let mut parts = entry.splitn(2, '=');
-            if let (Some(k), Some(v)) = (parts.next(), parts.next()) {
-                obj_map.insert(k.trim().to_string(), PathBuf::from(v.trim()));
             }
         }
     }
@@ -83,6 +91,13 @@ fn main() {
     // We need to expand these so we can see (and potentially substitute)
     // the .rcgu.o paths inside.
     let expanded = expand_response_files(&raw_args, &mut log, debug);
+    if let Err(error) = audit::run(
+        "link",
+        std::iter::once(real_linker.as_str()).chain(expanded.iter().map(String::as_str)),
+    ) {
+        eprintln!("[lyra-linker] original-input audit failed: {error}");
+        exit(1);
+    }
 
     logln!("expanded argv ({} tokens):", expanded.len());
     for (i, a) in expanded.iter().enumerate() {
@@ -120,30 +135,38 @@ fn main() {
     }
 
     logln!("summary: replaced {total_replaced} object(s), dropped {total_dropped} extra CGU(s)");
+    if !substituted.contains_key(&linked_crate) {
+        eprintln!("[lyra-linker] no object for linked crate {linked_crate} was replaced");
+        exit(1);
+    }
 
     eprintln!(
         "[lyra-linker] replaced {total_replaced} crate object(s), dropped {total_dropped} extra CGU(s)"
     );
 
-    // The expanded command line can be tens of thousands of characters on
-    // Windows, which exceeds CreateProcess's limit (~32k). Write a new
-    // response file and pass `@file` to the real linker.
-    let resp_file = env::var("LYRA_OBF_DIR")
-        .map(|d| PathBuf::from(d).join("lyra_linker_args.rsp"))
-        .unwrap_or_else(|_| std::env::temp_dir().join("lyra_linker_args.rsp"));
-    if let Err(e) = write_response_file(&resp_file, &new_args) {
-        eprintln!(
-            "[lyra-linker] failed to write response file {}: {e}",
-            resp_file.display()
-        );
-        exit(1);
+    let mut command = Command::new(&real_linker);
+    if cfg!(windows) {
+        // Native Windows has CreateProcess's ~32k command-line limit.
+        let resp_file = env::var("LYRA_OBF_DIR")
+            .map(|d| PathBuf::from(d).join("lyra_linker_args.rsp"))
+            .unwrap_or_else(|_| std::env::temp_dir().join("lyra_linker_args.rsp"));
+        if let Err(error) = write_response_file(&resp_file, &new_args) {
+            eprintln!(
+                "[lyra-linker] failed to write response file {}: {error}",
+                resp_file.display()
+            );
+            exit(1);
+        }
+        logln!("wrote response file: {}", resp_file.display());
+        command.arg(format!("@{}", resp_file.display()));
+    } else {
+        // Driver wrappers must see their arguments. Hiding them in a response
+        // file bypasses cargo-zigbuild's .def and other linker-flag adaptation.
+        command.args(&new_args);
     }
-    logln!("wrote response file: {}", resp_file.display());
-
-    let status = Command::new(&real_linker)
-        .arg(format!("@{}", resp_file.display()))
+    let status = command
         .status()
-        .unwrap_or_else(|e| panic!("lyra_linker: exec '{real_linker}' failed: {e}"));
+        .unwrap_or_else(|error| panic!("lyra_linker: exec '{real_linker}' failed: {error}"));
 
     logln!("real linker exit={:?}", status.code());
     exit(status.code().unwrap_or(1));

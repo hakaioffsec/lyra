@@ -39,8 +39,10 @@ use inkwell::values::{
 use inkwell::AddressSpace;
 use inkwell::GlobalVisibility;
 use rand::{Rng, RngCore};
+use std::collections::HashSet;
 use std::ptr::null_mut;
 
+use crate::obfuscator::coverage::{self, Counts};
 use crate::obfuscator::seed;
 
 /// Record of a string global that has been encrypted and needs a decrypt
@@ -68,17 +70,33 @@ pub fn apply<'ctx>(context: &'ctx Context, module: &mut Module<'ctx>) -> Result<
     let mut encrypted: Vec<EncryptedString<'ctx>> = Vec::new();
     let mut array_count = 0usize;
     let mut struct_count = 0usize;
+    let mut counts = coverage::enabled().then(Counts::default);
 
     // Snapshot globals up front - we will be adding new ones (key arrays)
     // and don't want them re-entered into the iteration.
     let all_globals: Vec<GlobalValue<'ctx>> = module.get_globals().collect();
+    let preinit = preinit_dependencies(module);
 
     for global in all_globals {
-        if !is_candidate_global(&global) {
+        if let Some(counts) = counts.as_mut() {
+            counts.considered += 1;
+        }
+        let exclusion = global_exclusion(&global).or_else(|| {
+            preinit
+                .contains(&(global.as_value_ref() as usize))
+                .then_some("preinit_dependency")
+        });
+        if let Some(reason) = exclusion {
+            if let Some(counts) = counts.as_mut() {
+                counts.skip(reason, 1);
+            }
             continue;
         }
 
         let Some(init) = global.get_initializer() else {
+            if let Some(counts) = counts.as_mut() {
+                counts.skip("declaration", 1);
+            }
             continue;
         };
 
@@ -87,13 +105,25 @@ pub fn apply<'ctx>(context: &'ctx Context, module: &mut Module<'ctx>) -> Result<
             BasicValueEnum::ArrayValue(arr) => {
                 if let Some(bytes) = string_bytes(&arr) {
                     if bytes.len() > 1 {
+                        if let Some(counts) = counts.as_mut() {
+                            counts.eligible += 1;
+                        }
                         if let Some(rec) = encrypt_array_global(
                             context, module, global, &arr, bytes, None, &mut rng,
                         )? {
                             encrypted.push(rec);
                             array_count += 1;
+                            if let Some(counts) = counts.as_mut() {
+                                counts.transformed += 1;
+                            }
+                        } else if let Some(counts) = counts.as_mut() {
+                            counts.skip("array_length_mismatch", 1);
                         }
+                    } else if let Some(counts) = counts.as_mut() {
+                        counts.skip("array_too_short", 1);
                     }
+                } else if let Some(counts) = counts.as_mut() {
+                    counts.skip("unsupported_array", 1);
                 }
             }
             // Struct-wrapped (Rust / C++ NTTP): scan every field for
@@ -136,6 +166,9 @@ pub fn apply<'ctx>(context: &'ctx Context, module: &mut Module<'ctx>) -> Result<
                 }
 
                 if field_records.is_empty() {
+                    if let Some(counts) = counts.as_mut() {
+                        counts.skip("no_encryptable_struct_fields", 1);
+                    }
                     continue;
                 }
 
@@ -151,6 +184,10 @@ pub fn apply<'ctx>(context: &'ctx Context, module: &mut Module<'ctx>) -> Result<
 
                 // Demote linkage / unnamed_addr so the init survives linking
                 demote_for_write(&global);
+                if let Some(counts) = counts.as_mut() {
+                    counts.eligible += 1;
+                    counts.transformed += 1;
+                }
 
                 // Emit key globals and encryption records
                 for (idx, _ciphertext, key, arr) in field_records {
@@ -165,10 +202,27 @@ pub fn apply<'ctx>(context: &'ctx Context, module: &mut Module<'ctx>) -> Result<
                     struct_count += 1;
                 }
             }
-            _ => {}
+            _ => {
+                if let Some(counts) = counts.as_mut() {
+                    counts.skip("unsupported_initializer", 1);
+                }
+            }
         }
     }
 
+    if let Some(counts) = counts {
+        let bytes: u64 = encrypted.iter().map(|record| u64::from(record.len)).sum();
+        let extra = format!(
+            "\"initialization_policy\":1,\"encrypted_arrays\":{},\"encrypted_fields\":{},\"encrypted_bytes\":{},",
+            array_count, struct_count, bytes
+        );
+        counts.emit(
+            "string-enc",
+            "globals",
+            module.get_name().to_str().unwrap_or("module"),
+            &extra,
+        );
+    }
     if encrypted.is_empty() {
         println!("        (no eligible string globals found)");
         return Ok(());
@@ -199,39 +253,99 @@ pub fn apply<'ctx>(context: &'ctx Context, module: &mut Module<'ctx>) -> Result<
 // Candidate filtering
 // -----------------------------------------------------------------------------
 
-fn is_candidate_global<'ctx>(g: &GlobalValue<'ctx>) -> bool {
+/// Functions in this section may run before the generated decryptor. Keep
+/// their transitive data dependencies readable, including constants reached
+/// through helper calls, aliases and constant-expression pointer tables.
+/// Cross-module entry points must each carry the annotation on their definition.
+fn preinit_dependencies(module: &Module<'_>) -> HashSet<usize> {
+    use llvm_sys::core::{
+        LLVMGetFirstBasicBlock, LLVMGetFirstInstruction, LLVMGetInitializer, LLVMGetNextBasicBlock,
+        LLVMGetNextInstruction, LLVMGetNumOperands, LLVMGetOperand, LLVMGetSection,
+        LLVMIsAConstant, LLVMIsAFunction, LLVMIsAGlobalVariable, LLVMIsAInstruction,
+    };
+    let mut pending = Vec::new();
+    for function in module.get_functions() {
+        let raw = function.as_value_ref();
+        let section = unsafe { LLVMGetSection(raw) };
+        if !section.is_null()
+            && unsafe { std::ffi::CStr::from_ptr(section) }.to_bytes() == b".text.lyra.preinit"
+        {
+            pending.push(raw);
+        }
+    }
+    let mut visited = HashSet::new();
+    let mut globals = HashSet::new();
+    while let Some(value) = pending.pop() {
+        if value.is_null() || !visited.insert(value as usize) {
+            continue;
+        }
+        unsafe {
+            if !LLVMIsAFunction(value).is_null() {
+                let mut block = LLVMGetFirstBasicBlock(value);
+                while !block.is_null() {
+                    let mut instruction = LLVMGetFirstInstruction(block);
+                    while !instruction.is_null() {
+                        pending.push(instruction);
+                        instruction = LLVMGetNextInstruction(instruction);
+                    }
+                    block = LLVMGetNextBasicBlock(block);
+                }
+            } else if !LLVMIsAGlobalVariable(value).is_null() {
+                globals.insert(value as usize);
+                let initializer = LLVMGetInitializer(value);
+                if !initializer.is_null() {
+                    pending.push(initializer);
+                }
+            } else if !LLVMIsAInstruction(value).is_null() || !LLVMIsAConstant(value).is_null() {
+                for index in 0..LLVMGetNumOperands(value) {
+                    pending.push(LLVMGetOperand(value, index as u32));
+                }
+            }
+        }
+    }
+    globals
+}
+
+fn global_exclusion<'ctx>(g: &GlobalValue<'ctx>) -> Option<&'static str> {
+    // A process constructor cannot decrypt every thread's TLS template.
+    // It only edits the loading thread's instance, leaving subsequent threads
+    // with encrypted state (including Rust runtime structs encoded as bytes).
+    if unsafe { llvm_sys::core::LLVMIsThreadLocal(g.as_value_ref()) } != 0 {
+        return Some("thread_local");
+    }
+
     // Skip declarations
     if g.get_initializer().is_none() {
-        return false;
+        return Some("declaration");
     }
 
     // Skip external linkage
     if matches!(g.get_linkage(), Linkage::External) {
-        return false;
+        return Some("external_linkage");
     }
 
     // Skip things in llvm.metadata section (debug / stackmaps / etc.)
     if let Some(sec) = g.get_section() {
         if sec.to_str() == Ok("llvm.metadata") {
-            return false;
+            return Some("metadata_section");
         }
     }
 
     // Skip specials
     if let Ok(name) = g.get_name().to_str() {
         if name.starts_with("llvm.") || name.starts_with("__llvm_") {
-            return false;
+            return Some("llvm_global");
         }
         // Skip our own key globals from prior runs
         if name.starts_with("lyra_str_key")
             || name.starts_with("__lyra_")
             || name.starts_with("lyra_decrypt_")
         {
-            return false;
+            return Some("lyra_global");
         }
     }
 
-    true
+    None
 }
 
 fn string_bytes<'a>(arr: &'a ArrayValue<'a>) -> Option<&'a [u8]> {

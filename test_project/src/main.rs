@@ -8,6 +8,8 @@
 use std::f64::consts::PI;
 use std::hint::black_box;
 
+mod benchmark;
+
 #[inline(never)]
 fn fft(re: &mut [f64], im: &mut [f64]) {
     let n = re.len();
@@ -77,6 +79,10 @@ fn secret_check(val: i32) -> bool {
 }
 
 fn main() {
+    if benchmark::run_cli() {
+        return;
+    }
+
     let secret_string = "This is a secret message that should be encrypted.";
     println!("{}", secret_string);
 

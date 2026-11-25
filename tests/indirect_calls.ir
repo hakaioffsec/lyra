@@ -1,0 +1,70 @@
+; Copyright (c) 2026 Hakai Offensive Security.
+; SPDX-License-Identifier: GPL-3.0-or-later
+; Native main succeeds only if encoded calls preserve ABI, recursion and memory.
+target datalayout = "e-p:64:64-i64:64-n8:16:32:64-S128"
+%Pair = type { double, i64 }
+
+define internal fastcc i64 @update(i64 noundef %x, ptr nonnull align 8 %state) noinline {
+entry:
+  %old = load volatile i64, ptr %state, align 8
+  %next = add i64 %old, %x
+  store volatile i64 %next, ptr %state, align 8
+  %answer = xor i64 %next, 28
+  ret i64 %answer
+}
+
+define internal %Pair @pair(double %value, i64 %word) noinline {
+entry:
+  %twice = fadd double %value, %value
+  %adjusted = add i64 %word, 31
+  %one = insertvalue %Pair poison, double %twice, 0
+  %both = insertvalue %Pair %one, i64 %adjusted, 1
+  ret %Pair %both
+}
+
+define internal i32 @narrow(i8 signext %signed, i16 zeroext %unsigned) noinline {
+entry:
+  %a = sext i8 %signed to i32
+  %b = zext i16 %unsigned to i32
+  %sum = add i32 %a, %b
+  ret i32 %sum
+}
+
+define internal i64 @recursive(i64 %n) noinline {
+entry:
+  %empty = icmp eq i64 %n, 0
+  br i1 %empty, label %base, label %again
+base:
+  ret i64 0
+again:
+  %less = sub i64 %n, 1
+  %previous = call i64 @recursive(i64 %less)
+  %sum = add i64 %previous, %n
+  ret i64 %sum
+}
+
+define i32 @main() {
+entry:
+  %state = alloca i64, align 8
+  store i64 6, ptr %state, align 8
+  %changed = call fastcc i64 @update(i64 noundef 5, ptr nonnull align 8 %state)
+  %memory = load volatile i64, ptr %state, align 8
+  %parts = call %Pair @pair(double 1.5, i64 11)
+  %number = extractvalue %Pair %parts, 0
+  %word = extractvalue %Pair %parts, 1
+  %extended = call i32 @narrow(i8 signext -2, i16 zeroext 65535)
+  %sum = call i64 @recursive(i64 7)
+  %c0 = icmp eq i64 %changed, 23
+  %c1 = icmp eq i64 %memory, 11
+  %c2 = fcmp oeq double %number, 3.0
+  %c3 = icmp eq i64 %word, 42
+  %c4 = icmp eq i32 %extended, 65533
+  %c5 = icmp eq i64 %sum, 28
+  %a0 = and i1 %c0, %c1
+  %a1 = and i1 %c2, %c3
+  %a2 = and i1 %c4, %c5
+  %b0 = and i1 %a0, %a1
+  %ok = and i1 %b0, %a2
+  %status = select i1 %ok, i32 0, i32 1
+  ret i32 %status
+}

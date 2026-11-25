@@ -9,22 +9,18 @@
 // --crate-type. If the crate is in LYRA_OBFUSCATE_CRATES we intercept:
 //
 //   - For LIB crates (--crate-type=lib/rlib):
-//       Phase A: re-run rustc with --emit extended to include llvm-ir so
-//                rustc emits both the rlib AND the crate's IR.
+//       Run rustc once with --emit extended to include llvm-ir so it
+//       emits both the rlib AND the crate's IR.
 //       Post:    call lyra __obfuscate-ir to obfuscate the IR,
-//                llc+clang to compile it to a .o,
+//                llc to compile it directly to a .o,
 //                then rewrite the rlib in place, replacing the main
 //                codegen-unit .o with our obfuscated .o.
 //
-//   - For BIN crates (--crate-type=bin):
-//       Phase A: re-run rustc with --emit=llvm-ir only (no link) so we
-//                can obtain the IR.
-//       Post:    obfuscate the IR and compile to .o.
-//       Phase B: re-run rustc with the original args PLUS
-//                -C linker=<lyra_linker.exe>. When rustc invokes the
-//                linker, the shim swaps the bin crate's .rcgu.o files for
-//                our pre-built obfuscated .o and then calls the real
-//                linker (LYRA_REAL_LINKER).
+//   - For linked outputs (bin/cdylib/dylib):
+//       Run rustc once with link + llvm-ir emission and our linker shim.
+//       The IR exists before linking; the shim calls our __link-codegen
+//       mode to produce the transformed object, substitutes it, and relays
+//       the original linker. Codegen output is replayed after rustc returns.
 //
 //   - For any other crate: exec real rustc as-is (pass-through).
 //
@@ -35,9 +31,8 @@
 //   LYRA_LYRA_EXE           absolute path to the lyra binary that can run
 //                           `__obfuscate-ir` in a subprocess
 //   LYRA_LLC                path to llc
-//   LYRA_CLANG              path to clang
 //   LYRA_LINKER_SHIM        absolute path to lyra_linker (for bin)
-//   LYRA_REAL_LINKER        path to the real system linker
+//   LYRA_REAL_LINKER        fallback when rustc has no explicit -C linker
 //   LYRA_TARGET             target triple, e.g. x86_64-pc-windows-msvc,
 //                           aarch64-apple-darwin, x86_64-unknown-linux-gnu
 //   LYRA_OBFUSCATE_FLAGS    space-separated flags forwarded to
@@ -49,25 +44,31 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{exit, Command};
 
+#[path = "../audit.rs"]
+mod audit;
+
 fn main() {
     let all: Vec<String> = env::args().skip(1).collect();
     if all.is_empty() {
         eprintln!("lyra_wrapper: no arguments");
         exit(1);
     }
+    if all[0] == "__link-codegen" {
+        exit(prepare_link_object());
+    }
 
-    let rustc = all[0].clone();
-    let rustc_args: Vec<String> = all[1..].to_vec();
+    let rustc = &all[0];
+    let rustc_args = &all[1..];
     let debug = env::var("LYRA_DEBUG").is_ok();
 
     // Very early pass-through: cargo calls `rustc -vV` and `rustc --version`
     // and other probing commands. We should not attempt to intercept those.
     // Rule of thumb: if the args don't include --crate-name, pass through.
-    let crate_name = find_opt_value(&rustc_args, "--crate-name");
+    let crate_name = find_opt_value(rustc_args, "--crate-name");
     let crate_name = match crate_name {
         Some(n) => n,
         None => {
-            let st = Command::new(&rustc).args(&rustc_args).status();
+            let st = Command::new(rustc).args(rustc_args).status();
             exit(match st {
                 Ok(s) => s.code().unwrap_or(1),
                 Err(e) => {
@@ -78,14 +79,16 @@ fn main() {
         }
     };
 
-    let targets: Vec<String> = env::var("LYRA_OBFUSCATE_CRATES")
-        .map(|s| s.split(',').map(|s| s.trim().to_string()).collect())
-        .unwrap_or_default();
+    let targets = env::var("LYRA_OBFUSCATE_CRATES").unwrap_or_default();
 
-    let should_obfuscate = targets.iter().any(|t| *t == crate_name);
+    let should_obfuscate = targets.split(',').any(|target| target.trim() == crate_name)
+        && find_opt_value(rustc_args, "--target")
+            .is_some_and(|target| env::var("LYRA_TARGET").is_ok_and(|expected| target == expected));
+    // Cargo compiles build dependencies for the host without --target. Never
+    // lower those with the deployment target, even when the package is selected.
 
     if !should_obfuscate {
-        let st = Command::new(&rustc).args(&rustc_args).status();
+        let st = Command::new(rustc).args(rustc_args).status();
         exit(match st {
             Ok(s) => s.code().unwrap_or(1),
             Err(e) => {
@@ -98,9 +101,9 @@ fn main() {
     // Determine crate types.
     //
     // Routing:
-    //   * `bin`, `cdylib`, `dylib` → handle_bin_crate (two-phase, uses
-    //     linker shim). They all produce a linked artefact (.exe/.dll/
-    //     .so/.dylib) via link.exe/ld, which the shim can intercept
+    //   * `bin`, `cdylib`, `dylib` → handle_bin_crate (one rustc invocation,
+    //     transformation at the linker boundary). They produce a linked artefact
+    //     (.exe/.dll/.so/.dylib), which the shim can intercept
     //     regardless of whether the artefact is an executable or a
     //     shared library.
     //   * `lib`, `rlib` → handle_lib_crate (emit IR, obfuscate, patch
@@ -126,48 +129,23 @@ fn main() {
         PathBuf::from(env::var("LYRA_OBF_DIR").expect("lyra_wrapper: LYRA_OBF_DIR not set"));
     fs::create_dir_all(&obf_dir).ok();
 
-    let lyra_exe = env::var("LYRA_LYRA_EXE").expect("lyra_wrapper: LYRA_LYRA_EXE not set");
-    let llc = env::var("LYRA_LLC").expect("lyra_wrapper: LYRA_LLC not set");
-    let clang = env::var("LYRA_CLANG").expect("lyra_wrapper: LYRA_CLANG not set");
-    let target = env::var("LYRA_TARGET").expect("lyra_wrapper: LYRA_TARGET not set");
-    let obf_flags: Vec<String> = env::var("LYRA_OBFUSCATE_FLAGS")
-        .unwrap_or_default()
-        .split_whitespace()
-        .map(|s| s.to_string())
-        .collect();
-
     let rc = if is_linked_output {
         handle_bin_crate(
-            &rustc,
-            &rustc_args,
+            rustc,
+            rustc_args,
             &crate_name,
             &obf_dir,
-            &lyra_exe,
-            &llc,
-            &clang,
-            &target,
-            &obf_flags,
+            is_rlib_output,
             debug,
         )
     } else if is_rlib_output {
-        handle_lib_crate(
-            &rustc,
-            &rustc_args,
-            &crate_name,
-            &obf_dir,
-            &lyra_exe,
-            &llc,
-            &clang,
-            &target,
-            &obf_flags,
-            debug,
-        )
+        handle_lib_crate(rustc, rustc_args, &crate_name, &obf_dir, debug)
     } else {
         // staticlib or unknown crate type — pass through untouched for
         // now. A staticlib-specific handler that patches the .lib/.a
         // archive is planned but not implemented.
-        Command::new(&rustc)
-            .args(&rustc_args)
+        Command::new(rustc)
+            .args(rustc_args)
             .status()
             .map(|s| s.code().unwrap_or(1))
             .unwrap_or(1)
@@ -184,16 +162,11 @@ fn handle_lib_crate(
     rustc_args: &[String],
     crate_name: &str,
     obf_dir: &Path,
-    lyra_exe: &str,
-    llc: &str,
-    clang: &str,
-    target: &str,
-    obf_flags: &[String],
     debug: bool,
 ) -> i32 {
     let out_dir = find_opt_value(rustc_args, "--out-dir").unwrap_or_default();
 
-    // Phase A: run rustc with --emit extended to include llvm-ir. We let
+    // Run rustc with --emit extended to include llvm-ir. We let
     // rustc write the .ll to the default location (out-dir/<crate>-<hash>...)
     // rather than forcing an explicit path, because some environments don't
     // let rustc write directly to a path outside out-dir.
@@ -215,7 +188,8 @@ fn handle_lib_crate(
     // Find the .ll emitted by rustc in the out-dir. Filename pattern depends
     // on --extra-filename but is deterministic: <crate><extra>.<crate>.<cgu_hash>-cgu.N.rcgu.ll
     // We match "<normalized-crate><extra>" at the start.
-    let ll_path = match find_emitted_ll(Path::new(&out_dir), crate_name, rustc_args) {
+    let extra = find_c_value(rustc_args, "extra-filename").unwrap_or_default();
+    let ll_path = match find_emitted_ll(Path::new(&out_dir), crate_name, &extra) {
         Some(p) => p,
         None => {
             eprintln!(
@@ -228,18 +202,10 @@ fn handle_lib_crate(
         eprintln!("[lyra_wrapper] found IR at {}", ll_path.display());
     }
 
-    // Obfuscate IR via lyra subprocess
-    let obf_ll = obf_dir.join(format!("{crate_name}.obf.ll"));
-    if !run_obfuscate_subprocess(lyra_exe, &ll_path, &obf_ll, obf_flags, debug) {
-        return 1;
-    }
-
-    // llc + clang -> .o
-    let obf_o = obf_dir.join(format!("{crate_name}.obf.o"));
     let reloc = reloc_model_for(rustc_args);
-    if !compile_ir_to_obj(llc, clang, target, &reloc, &obf_ll, &obf_o, debug) {
+    let Some(obf_o) = generate_object(crate_name, &ll_path, obf_dir, &reloc, debug) else {
         return 1;
-    }
+    };
 
     // Patch the rlib
     let rlib_path = find_rlib(&PathBuf::from(&out_dir), crate_name, rustc_args);
@@ -276,105 +242,149 @@ fn handle_bin_crate(
     rustc_args: &[String],
     crate_name: &str,
     obf_dir: &Path,
-    lyra_exe: &str,
-    llc: &str,
-    clang: &str,
-    target: &str,
-    obf_flags: &[String],
+    also_rlib: bool,
     debug: bool,
 ) -> i32 {
     let out_dir = find_opt_value(rustc_args, "--out-dir").unwrap_or_default();
-
-    // Phase A: emit IR only (no link) by dropping all --emit args and
-    // adding a single `--emit=llvm-ir` (default location in out-dir).
-    let mut phase_a = strip_emit_args(rustc_args);
-    phase_a.push("--emit=llvm-ir".to_string());
-    if debug {
-        eprintln!("[lyra_wrapper] BIN phase A: rustc {}", phase_a.join(" "));
-    }
-    let status = match Command::new(rustc).args(&phase_a).status() {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("[lyra_wrapper] rustc phase A exec failed: {e}");
-            return 1;
-        }
-    };
-    if !status.success() {
-        return status.code().unwrap_or(1);
-    }
-
-    // Locate the .ll in out-dir
-    let ll_path = match find_emitted_ll(Path::new(&out_dir), crate_name, rustc_args) {
-        Some(p) => p,
-        None => {
-            eprintln!(
-                "[lyra_wrapper] could not find emitted .ll for bin '{crate_name}' in '{out_dir}'"
-            );
-            return 1;
-        }
-    };
-
-    // Obfuscate
-    let obf_ll = obf_dir.join(format!("{crate_name}.obf.ll"));
-    if !run_obfuscate_subprocess(lyra_exe, &ll_path, &obf_ll, obf_flags, debug) {
-        return 1;
-    }
-
-    // llc+clang -> .o
-    let obf_o = obf_dir.join(format!("{crate_name}.obf.o"));
-    let reloc = reloc_model_for(rustc_args);
-    if !compile_ir_to_obj(llc, clang, target, &reloc, &obf_ll, &obf_o, debug) {
-        return 1;
-    }
-
-    // Phase B
+    let extra = find_c_value(rustc_args, "extra-filename").unwrap_or_default();
     let shim = env::var("LYRA_LINKER_SHIM").expect("lyra_wrapper: LYRA_LINKER_SHIM not set");
-
-    let mut phase_b: Vec<String> = rustc_args.to_vec();
-    phase_b.push("-C".to_string());
-    phase_b.push(format!("linker={shim}"));
-    phase_b.push("--allow".to_string());
-    phase_b.push("linker_messages".to_string());
-
-    if debug {
-        eprintln!("[lyra_wrapper] BIN phase B: rustc {}", phase_b.join(" "));
+    let output = obf_dir.join(format!("{crate_name}.link-codegen.stdout"));
+    match fs::remove_file(&output) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            eprintln!("lyra_wrapper: cannot clear prior codegen output: {error}");
+            return 1;
+        }
     }
-    let status = match Command::new(rustc).args(&phase_b).status() {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("[lyra_wrapper] rustc phase B exec failed: {e}");
+    let mut modified = ensure_emit_has_llvm_ir(rustc_args);
+    modified.extend([
+        "-C".to_string(),
+        format!("linker={shim}"),
+        "--allow".to_string(),
+        "linker_messages".to_string(),
+    ]);
+    if debug {
+        eprintln!("[lyra_wrapper] linked rustc: {}", modified.join(" "));
+    }
+    let mut command = Command::new(rustc);
+    command
+        .args(&modified)
+        .env(
+            "LYRA_LINK_CODEGEN",
+            env::current_exe().expect("lyra_wrapper: current executable"),
+        )
+        .env("LYRA_LINK_CRATE", crate_name)
+        .env("LYRA_LINK_OUT_DIR", &out_dir)
+        .env("LYRA_LINK_EXTRA", extra)
+        .env("LYRA_LINK_RELOC", reloc_model_for(rustc_args))
+        .env("LYRA_LINK_STDOUT", &output);
+    if let Some(linker) = find_c_value(rustc_args, "linker") {
+        command.env("LYRA_REAL_LINKER", linker);
+    }
+    let status = match command.status() {
+        Ok(status) => status,
+        Err(error) => {
+            eprintln!("lyra_wrapper: rustc failed to start: {error}");
             return 1;
         }
     };
+    // rustc captures linker output. Replay the callback's exact stream here so
+    // coverage remains machine-readable to the outer Cargo/release controller.
+    match fs::File::open(&output) {
+        Ok(mut input) => {
+            if let Err(error) = std::io::copy(&mut input, &mut std::io::stdout().lock()) {
+                eprintln!("lyra_wrapper: cannot relay codegen output: {error}");
+                return 1;
+            }
+        }
+        Err(error) if status.success() => {
+            eprintln!("lyra_wrapper: linked compilation produced no codegen output: {error}");
+            return 1;
+        }
+        Err(_) => {}
+    }
+    if status.success() && also_rlib {
+        // Mixed cdylib+rlib crates also contribute their archive to dependants.
+        // Updating only their shared library would leave those consumers plain.
+        let Some(archive) = find_rlib(Path::new(&out_dir), crate_name, rustc_args) else {
+            eprintln!("lyra_wrapper: missing archive for mixed-output crate {crate_name}");
+            return 1;
+        };
+        if let Err(error) = patch_rlib_replace_main_o(
+            &archive,
+            crate_name,
+            &obf_dir.join(format!("{crate_name}.obf.o")),
+        ) {
+            eprintln!("lyra_wrapper: mixed-output archive patch failed: {error}");
+            return 1;
+        }
+    }
     status.code().unwrap_or(1)
 }
 
-/// Find the .ll emitted by rustc for `crate_name` in `out_dir`.
-/// rustc names the file `<crate><extra>.<cgu>.rcgu.ll` or simpler patterns.
-/// We pick the newest matching candidate.
-fn find_emitted_ll(out_dir: &Path, crate_name: &str, rustc_args: &[String]) -> Option<PathBuf> {
-    let normalized = crate_name.replace('-', "_");
-    let extra = find_c_value(rustc_args, "extra-filename").unwrap_or_default();
+fn prepare_link_object() -> i32 {
+    let crate_name = env::var("LYRA_LINK_CRATE").expect("missing linked crate");
+    let out_dir = env::var("LYRA_LINK_OUT_DIR").expect("missing linked output directory");
+    let extra = env::var("LYRA_LINK_EXTRA").expect("missing linked filename suffix");
+    let reloc = env::var("LYRA_LINK_RELOC").expect("missing linked relocation model");
+    let obf_dir = PathBuf::from(env::var("LYRA_OBF_DIR").expect("missing obfuscation directory"));
+    let Some(input) = find_emitted_ll(Path::new(&out_dir), &crate_name, &extra) else {
+        eprintln!("lyra_wrapper: no unique LLVM IR for {crate_name}{extra} before linking");
+        return 1;
+    };
+    let debug = env::var_os("LYRA_DEBUG").is_some();
+    if generate_object(&crate_name, &input, &obf_dir, &reloc, debug).is_some() {
+        0
+    } else {
+        1
+    }
+}
 
-    let mut candidates: Vec<PathBuf> = Vec::new();
-    let entries = fs::read_dir(out_dir).ok()?;
-    for e in entries.flatten() {
-        let p = e.path();
-        if p.extension().and_then(|s| s.to_str()) != Some("ll") {
+fn generate_object(
+    crate_name: &str,
+    input: &Path,
+    obf_dir: &Path,
+    reloc: &str,
+    debug: bool,
+) -> Option<PathBuf> {
+    let lyra = env::var("LYRA_LYRA_EXE").expect("missing LYRA_LYRA_EXE");
+    let llc = env::var("LYRA_LLC").expect("missing LYRA_LLC");
+    let target = env::var("LYRA_TARGET").expect("missing LYRA_TARGET");
+    let flags: Vec<String> = env::var("LYRA_OBFUSCATE_FLAGS")
+        .unwrap_or_default()
+        .split_whitespace()
+        .map(str::to_owned)
+        .collect();
+    let ir = obf_dir.join(format!("{crate_name}.obf.ll"));
+    if !run_obfuscate_subprocess(&lyra, input, &ir, &flags, debug) {
+        return None;
+    }
+    let object = obf_dir.join(format!("{crate_name}.obf.o"));
+    compile_ir_to_obj(&llc, &target, reloc, &ir, &object, debug).then_some(object)
+}
+
+/// Require this invocation's exact crate/suffix and its single codegen unit.
+fn find_emitted_ll(out_dir: &Path, crate_name: &str, extra: &str) -> Option<PathBuf> {
+    let prefix = format!("{crate_name}{extra}.");
+    let mut found = None;
+    for entry in fs::read_dir(out_dir).ok()?.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|s| s.to_str()) != Some("ll") {
             continue;
         }
-        let name = p.file_name().and_then(|s| s.to_str()).unwrap_or("");
-        let prefix_with_extra = format!("{normalized}{extra}");
-        if name.starts_with(&prefix_with_extra)
-            || name.starts_with(&format!("{normalized}-"))
-            || name.starts_with(&format!("{normalized}."))
-        {
-            candidates.push(p);
+        let name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("");
+        if name.starts_with(&prefix) {
+            if found.is_some() {
+                return None;
+            }
+            found = Some(path);
         }
     }
-
-    candidates.sort_by_key(|p| fs::metadata(p).and_then(|m| m.modified()).ok());
-    candidates.pop()
+    found
 }
 
 // ---------------------------------------------------------------------------
@@ -438,6 +448,9 @@ fn patch_rlib_replace_main_o(
         return Ok(());
     }
 
+    let archive_name = rlib_path.to_string_lossy();
+    audit::run("archive-save", [crate_name, archive_name.as_ref()])?;
+
     // 2) delete all main .o members
     for n in &main_names {
         let status = Command::new(&llvm_ar)
@@ -475,6 +488,7 @@ fn patch_rlib_replace_main_o(
             format!("llvm-ar r failed"),
         ));
     }
+    audit::run("archive-finish", [crate_name, archive_name.as_ref()])?;
 
     Ok(())
 }
@@ -559,89 +573,60 @@ fn run_obfuscate_subprocess(
 
 fn compile_ir_to_obj(
     llc: &str,
-    clang: &str,
     target: &str,
     reloc: &str,
     ll: &Path,
     out_o: &Path,
     debug: bool,
 ) -> bool {
-    let asm = out_o.with_extension("s");
-
+    // Rust's gnullvm suffix selects the MinGW linker toolchain, not a distinct
+    // LLVM ABI. Match the GNU triple that rustc writes into its IR.
+    let target = match target {
+        "x86_64-pc-windows-gnullvm" => "x86_64-pc-windows-gnu",
+        other => other,
+    };
+    // Emit objects directly. The assembly round trip loses COFF imported-global
+    // section spelling (LLVM's \\01 symbol prefix can escape into a directive).
+    // Relocation and section granularity belong to this code-generation step.
     if debug {
         eprintln!(
-            "[lyra_wrapper] llc -mtriple={target} --relocation-model={reloc} {} -filetype=asm -o {}",
+            "[lyra_wrapper] llc -mtriple={target} --relocation-model={reloc} --function-sections --data-sections -filetype=obj {} -o {}",
             ll.display(),
-            asm.display()
+            out_o.display()
         );
     }
     match Command::new(llc)
         .args([
-            &format!("-mtriple={target}"),
-            &format!("--relocation-model={reloc}"),
-            //"-O0",
-            ll.to_str().unwrap(),
-            "-filetype=asm",
-            "-o",
-            asm.to_str().unwrap(),
+            "-mtriple",
+            target,
+            "--relocation-model",
+            reloc,
+            // Preserve the same full local names as Lyra's IR reader.
+            "--non-global-value-max-name-size=-1",
+            "--function-sections",
+            "--data-sections",
+            "-filetype=obj",
         ])
+        .arg(ll)
+        .arg("-o")
+        .arg(out_o)
         .status()
     {
-        Ok(s) if s.success() => {}
-        Ok(s) => {
+        Ok(status) if status.success() => true,
+        Ok(status) => {
             eprintln!(
-                "[lyra_wrapper] llc exit={:?} (cmd: {llc} -mtriple={target} --relocation-model={reloc} {} -filetype=asm -o {})",
-                s.code(),
+                "[lyra_wrapper] llc exit={:?}: {} -> {} (target={target}, relocation={reloc})",
+                status.code(),
                 ll.display(),
-                asm.display()
-            );
-            return false;
-        }
-        Err(e) => {
-            eprintln!("[lyra_wrapper] failed to spawn llc '{llc}': {e}");
-            return false;
-        }
-    }
-
-    // Assemble only. Deliberately no -fPIC/-fPIE here: those are front-end
-    // codegen flags, and on a `.s` input clang dispatches straight to the
-    // integrated assembler, which never sees them (verified: the four
-    // variants produce byte-identical objects). RIP-relative vs absolute
-    // addressing is already baked into the asm by llc above, so the
-    // relocation model is controlled there and only there.
-    if debug {
-        eprintln!(
-            "[lyra_wrapper] clang --target={target} -c {} -o {}",
-            asm.display(),
-            out_o.display()
-        );
-    }
-    match Command::new(clang)
-        .args([
-            &format!("--target={target}"),
-            "-c",
-            asm.to_str().unwrap(),
-            "-o",
-            out_o.to_str().unwrap(),
-        ])
-        .status()
-    {
-        Ok(s) if s.success() => {}
-        Ok(s) => {
-            eprintln!(
-                "[lyra_wrapper] clang exit={:?} (cmd: {clang} --target={target} -c {} -o {})",
-                s.code(),
-                asm.display(),
                 out_o.display()
             );
-            return false;
+            false
         }
-        Err(e) => {
-            eprintln!("[lyra_wrapper] failed to spawn clang '{clang}': {e}");
-            return false;
+        Err(error) => {
+            eprintln!("[lyra_wrapper] failed to spawn llc '{llc}': {error}");
+            false
         }
     }
-    true
 }
 
 // ---------------------------------------------------------------------------
@@ -695,22 +680,19 @@ fn reloc_model_for(rustc_args: &[String]) -> String {
     }
 }
 
-/// Find `-C KEY=VAL` or `-C KEY val` style args, returning VAL.
+/// Find `-C KEY=VAL` or `-CKEY=VAL`, with rustc's last-option precedence.
 fn find_c_value(args: &[String], key: &str) -> Option<String> {
-    let mut i = 0;
-    while i < args.len() {
-        let a = &args[i];
-        if a == "-C" && i + 1 < args.len() {
-            let kv = &args[i + 1];
-            if let Some(rest) = kv.strip_prefix(&format!("{key}=")) {
-                return Some(rest.to_string());
-            }
-        } else if let Some(rest) = a.strip_prefix(&format!("-C{key}=")) {
-            return Some(rest.to_string());
-        }
-        i += 1;
-    }
-    None
+    args.iter().enumerate().rev().find_map(|(index, argument)| {
+        let option = if argument == "-C" {
+            args.get(index + 1)?.as_str()
+        } else {
+            argument.strip_prefix("-C")?
+        };
+        option
+            .strip_prefix(key)?
+            .strip_prefix('=')
+            .map(str::to_owned)
+    })
 }
 
 fn find_crate_types(args: &[String]) -> Vec<String> {
@@ -781,22 +763,195 @@ fn merge_emit_with_llvm_ir(existing: &str) -> String {
     s
 }
 
-/// Remove all `--emit ...` / `--emit=...` arguments from the arg list.
-fn strip_emit_args(args: &[String]) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut i = 0;
-    while i < args.len() {
-        let a = &args[i];
-        if a == "--emit" {
-            i += 2;
-            continue;
-        }
-        if a.starts_with("--emit=") {
-            i += 1;
-            continue;
-        }
-        out.push(a.clone());
-        i += 1;
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn codegen_options_preserve_last_explicit_linker_and_relocation() {
+        let args: Vec<String> = [
+            "-Clinker=host-cc",
+            "-Crelocation-model=pic",
+            "-C",
+            "linker=/target tools/zigcc",
+            "-C",
+            "relocation-model=static",
+            "-Clinker-flavor=gcc",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+        assert_eq!(
+            find_c_value(&args, "linker").as_deref(),
+            Some("/target tools/zigcc")
+        );
+        assert_eq!(reloc_model_for(&args), "static");
     }
-    out
+
+    #[test]
+    fn ir_selection_rejects_stale_metadata_and_multiple_codegen_units() {
+        let directory = env::temp_dir().join(format!(
+            "lyra-ir-selection-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        fs::create_dir(&directory).unwrap();
+        let wanted = directory.join("example-current.ll");
+        fs::write(&wanted, b"current").unwrap();
+        fs::write(directory.join("example-stale.ll"), b"stale").unwrap();
+        fs::write(directory.join("example-currently.ll"), b"wrong suffix").unwrap();
+        assert_eq!(
+            find_emitted_ll(&directory, "example", "-current"),
+            Some(wanted.clone())
+        );
+        fs::remove_file(wanted).unwrap();
+        assert!(find_emitted_ll(&directory, "example", "-current").is_none());
+        fs::write(directory.join("example-current.0.rcgu.ll"), b"unit zero").unwrap();
+        fs::write(directory.join("example-current.1.rcgu.ll"), b"unit one").unwrap();
+        assert!(find_emitted_ll(&directory, "example", "-current").is_none());
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linked_executable_discards_unreachable_code_and_data() {
+        let llvm_bin = env::var_os("LYRA_LLVM_BIN")
+            .map(PathBuf::from)
+            .or_else(|| env::var_os("LLVM_SYS_221_PREFIX").map(|p| PathBuf::from(p).join("bin")))
+            .unwrap_or_default();
+        let llc = llvm_bin.join(format!("llc{}", env::consts::EXE_SUFFIX));
+        let clang = llvm_bin.join(format!("clang{}", env::consts::EXE_SUFFIX));
+        let rustc = Command::new(env::var_os("RUSTC").unwrap_or_else(|| "rustc".into()))
+            .arg("-vV")
+            .output()
+            .expect("read native target");
+        assert!(rustc.status.success());
+        let version = String::from_utf8(rustc.stdout).unwrap();
+        let target = version
+            .lines()
+            .find_map(|line| line.strip_prefix("host: "))
+            .unwrap();
+        let directory = env::temp_dir().join(format!(
+            "lyra-sections-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        fs::create_dir(&directory).unwrap();
+        let ir = directory.join("sections.ll");
+        fs::write(&ir, include_str!("../../tests/dead_sections.ir")).unwrap();
+        let object = directory.join("sections.o");
+        assert!(compile_ir_to_obj(
+            llc.to_str().unwrap(),
+            target,
+            "pic",
+            &ir,
+            &object,
+            false,
+        ));
+        let executable = directory.join("sections");
+        let linked = Command::new(clang)
+            .arg(format!("--target={target}"))
+            .arg("-Wl,--gc-sections")
+            .arg(object)
+            .arg("-o")
+            .arg(&executable)
+            .status()
+            .unwrap();
+        assert!(linked.success());
+        assert!(Command::new(&executable).status().unwrap().success());
+        let bytes = fs::read(executable).unwrap();
+        assert!(
+            !bytes
+                .windows(b"LYRA_DEAD_DATA".len())
+                .any(|s| s == b"LYRA_DEAD_DATA"),
+            "unreachable release content survived section garbage collection"
+        );
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn rust_gnullvm_target_produces_a_windows_amd64_object() {
+        let llvm_bin = env::var_os("LYRA_LLVM_BIN")
+            .map(PathBuf::from)
+            .or_else(|| env::var_os("LLVM_SYS_221_PREFIX").map(|p| PathBuf::from(p).join("bin")))
+            .unwrap_or_default();
+        let llc = llvm_bin.join(format!("llc{}", env::consts::EXE_SUFFIX));
+        let directory = env::temp_dir().join(format!(
+            "lyra-gnullvm-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        fs::create_dir(&directory).unwrap();
+        let ir = directory.join("probe.ll");
+        fs::write(&ir, include_str!("../../tests/coff_import.ir")).unwrap();
+        let object = directory.join("probe.o");
+        assert!(compile_ir_to_obj(
+            llc.to_str().unwrap(),
+            "x86_64-pc-windows-gnullvm",
+            "pic",
+            &ir,
+            &object,
+            false,
+        ));
+        let bytes = fs::read(&object).unwrap();
+        assert_eq!(u16::from_le_bytes([bytes[0], bytes[1]]), 0x8664);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn long_local_names_preserve_native_branch_results() {
+        let llvm_bin = env::var_os("LYRA_LLVM_BIN")
+            .map(PathBuf::from)
+            .or_else(|| env::var_os("LLVM_SYS_221_PREFIX").map(|p| PathBuf::from(p).join("bin")))
+            .unwrap_or_default();
+        let llc = llvm_bin.join(format!("llc{}", env::consts::EXE_SUFFIX));
+        let clang = llvm_bin.join(format!("clang{}", env::consts::EXE_SUFFIX));
+        let rustc = Command::new(env::var_os("RUSTC").unwrap_or_else(|| "rustc".into()))
+            .arg("-vV")
+            .output()
+            .expect("run rustc for the native target");
+        assert!(rustc.status.success());
+        let version = String::from_utf8(rustc.stdout).unwrap();
+        let target = version
+            .lines()
+            .find_map(|line| line.strip_prefix("host: "))
+            .expect("rustc host triple");
+        let directory = env::temp_dir().join(format!(
+            "lyra-long-names-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        fs::create_dir(&directory).unwrap();
+        let ir = directory.join("long-names.ll");
+        fs::write(
+            &ir,
+            include_str!("../../tests/long_names.ir.in")
+                .replace("__LONG_LABEL__", &"L".repeat(1024)),
+        )
+        .unwrap();
+        let object = directory.join("long-names.o");
+        assert!(compile_ir_to_obj(
+            llc.to_str().unwrap(),
+            target,
+            "pic",
+            &ir,
+            &object,
+            true,
+        ));
+        let executable = directory.join(format!("long-names{}", env::consts::EXE_SUFFIX));
+        let linked = Command::new(&clang)
+            .arg(format!("--target={target}"))
+            .arg(&object)
+            .arg("-o")
+            .arg(&executable)
+            .status()
+            .expect("link native name-boundary fixture");
+        assert!(linked.success());
+        // The IR main returns zero only when choose(1) == 12 and choose(0) == 22.
+        assert!(
+            Command::new(&executable).status().unwrap().success(),
+            "long-prefix block names changed the two branch results"
+        );
+        fs::remove_dir_all(directory).unwrap();
+    }
 }

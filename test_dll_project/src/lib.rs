@@ -24,6 +24,38 @@ pub extern "C" fn add(a: i32, b: i32) -> i32 {
     }
 }
 
+// Runtime operands cross the C ABI so rustc cannot fold these operations before
+// Lyra sees them. The native probe checks strict floating-point edge cases.
+#[no_mangle]
+pub extern "C" fn float_add_f32(a: f32, b: f32) -> f32 {
+    a + b
+}
+
+#[no_mangle]
+pub extern "C" fn float_sub_f32(a: f32, b: f32) -> f32 {
+    a - b
+}
+
+#[no_mangle]
+pub extern "C" fn float_mul_f32(a: f32, b: f32) -> f32 {
+    a * b
+}
+
+#[no_mangle]
+pub extern "C" fn float_add_f64(a: f64, b: f64) -> f64 {
+    a + b
+}
+
+#[no_mangle]
+pub extern "C" fn float_sub_f64(a: f64, b: f64) -> f64 {
+    a - b
+}
+
+#[no_mangle]
+pub extern "C" fn float_mul_f64(a: f64, b: f64) -> f64 {
+    a * b
+}
+
 /// Magic-number style export. A value unlikely to appear by chance in
 /// `std::fmt` or panic machinery, used as a sanity ground truth by the
 /// harness.
