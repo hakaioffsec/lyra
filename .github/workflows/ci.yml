@@ -88,8 +88,14 @@ jobs:
         run: cargo build --locked --bins 2>&1 | tee "$RUNNER_TEMP/lyra-ci-logs/build.log"
 
       - name: Test all native binaries
+        id: native_tests
         timeout-minutes: 15
         run: cargo test --locked --bins 2>&1 | tee "$RUNNER_TEMP/lyra-ci-logs/test.log"
+
+      - name: Diagnose failed Windows tests serially
+        if: failure() && matrix.platform == 'windows-x86_64-msvc' && steps.native_tests.outcome == 'failure'
+        timeout-minutes: 15
+        run: cargo test --locked --bins -- --test-threads=1 --nocapture 2>&1 | tee "$RUNNER_TEMP/lyra-ci-logs/test-serial-diagnostic.log"
 
       - name: Exercise public projects
         timeout-minutes: 60

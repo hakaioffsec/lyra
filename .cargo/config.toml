@@ -1,0 +1,4 @@
+# The supported Windows LLVM SDK and the C++ outlining shim use /MT.
+# Rust must use the same CRT rather than linking both static and dynamic runtimes.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
