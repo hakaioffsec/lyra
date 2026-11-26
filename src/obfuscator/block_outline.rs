@@ -12,7 +12,7 @@ use inkwell::context::Context;
 use inkwell::module::Module;
 use inkwell::values::AsValueRef;
 use llvm_sys::prelude::LLVMValueRef;
-use rand::Rng;
+use rand::RngExt;
 
 use super::coverage::{self, Counts};
 use super::seed;
@@ -79,7 +79,7 @@ pub fn apply<'ctx>(_context: &'ctx Context, module: &mut Module<'ctx>) -> Result
 
 fn transform(
     module: &mut Module<'_>,
-    rng: &mut impl Rng,
+    rng: &mut impl RngExt,
     mut counts: Option<&mut Counts>,
 ) -> Result<usize> {
     // Extraction appends helpers but never erases originals. Capture the

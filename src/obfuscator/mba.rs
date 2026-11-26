@@ -50,7 +50,7 @@ use inkwell::values::{
     AnyValueEnum, AsValueRef, BasicValueEnum, FunctionValue, InstructionOpcode, InstructionValue,
     IntValue, Operand,
 };
-use rand::Rng;
+use rand::RngExt;
 
 use crate::obfuscator::coverage::{self, Counts};
 use crate::obfuscator::seed;
@@ -142,7 +142,7 @@ fn emit_coverage(module: &Module<'_>, rounds: &[Counts; ROUNDS], complete: bool)
 fn transform_function<'ctx>(
     context: &'ctx Context,
     function: &FunctionValue<'ctx>,
-    rng: &mut impl Rng,
+    rng: &mut impl RngExt,
     mut rounds: Option<&mut [Counts; ROUNDS]>,
 ) -> Result<usize> {
     let builder = context.create_builder();
@@ -337,7 +337,7 @@ fn result_is_defined<'ctx>(
 fn substitute<'ctx>(
     builder: &Builder<'ctx>,
     inst: InstructionValue<'ctx>,
-    rng: &mut impl Rng,
+    rng: &mut impl RngExt,
 ) -> Result<bool> {
     let opcode = inst.get_opcode();
     let Some(parent) = inst.get_parent() else {

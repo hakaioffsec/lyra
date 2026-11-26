@@ -38,7 +38,7 @@ use inkwell::values::{
 };
 use inkwell::AddressSpace;
 use inkwell::GlobalVisibility;
-use rand::{Rng, RngCore};
+use rand::{Rng, RngExt};
 use std::collections::HashSet;
 use std::ptr::null_mut;
 
