@@ -36,7 +36,7 @@ with assertions off. Include installed/generated headers, static LLVM archives,
 by `llvm-config --link-static --system-libs` and use a native C++ compiler.
 The builder prepares a separate private SDK and rebuilds affected code
 generation in `llc` and the static LLVMCodeGen library. Consumers must relink
-statically; Lyra does so. Stock shared libraries remain for copied `clang` and
+statically; Lyra does so. Stock shared libraries remain for `clang` and
 `opt`, whose code generation is not patched. The builder checks that patched
 `llc` has no shared LLVM dependency.
 
@@ -59,6 +59,7 @@ python3 scripts/build_llvm.py --base-prefix "<stock-prefix>" \
   --prefix "$LLVM_SYS_231_PREFIX" --jobs 4
 export LYRA_LLVM_BIN="$LLVM_SYS_231_PREFIX/bin"
 cargo fmt --all -- --check
+python3 -m unittest discover -s scripts -p 'test_*.py'
 cargo build --release --locked --bins
 cargo test --release --locked --bins
 python3 scripts/ci_smoke.py --suite smoke --lyra "$PWD/target/release/lyra" \

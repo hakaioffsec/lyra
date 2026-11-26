@@ -192,24 +192,40 @@ def base_sdk(base):
 
 
 def clone_sdk(base, prefix):
+    if os.name != "nt":
+        # Keep writable containers private. Link unchanged SDK contents instead
+        # of duplicating root-owned packages or following cyclic build symlinks.
+        for source in base.iterdir():
+            if source.name in (MARKER, "logs"):
+                continue
+            destination = prefix / source.name
+            if source.name in ("bin", "lib", "share") and source.is_dir():
+                if destination.is_symlink():
+                    raise RuntimeError(f"SDK container must be a real directory: {destination}")
+                destination.mkdir(exist_ok=True)
+                entries = source.iterdir()
+            else:
+                entries = (source,)
+            for entry in entries:
+                target = destination / entry.name if entry != source else destination
+                if target.is_symlink() or target.is_file():
+                    target.unlink()
+                elif target.exists():
+                    raise RuntimeError(f"Use a fresh SDK prefix; directory already exists: {target}")
+                if entry == base / "bin/llvm-config":
+                    shutil.copy2(entry, target)
+                else:
+                    target.symlink_to(entry.resolve(), target_is_directory=entry.is_dir())
+        return
+
     def copy_file(source, destination):
         destination = Path(destination)
-        # Never open an existing hard link for writing, including interrupted runs.
         if destination.exists() or destination.is_symlink():
             destination.unlink()
-        if os.name == "nt":
-            # Windows cannot replace a read-only destination; do not change
-            # attributes on a hard link that would also affect the stock SDK.
-            shutil.copyfile(source, destination)
-        else:
-            try:
-                os.link(Path(source).resolve(), destination)
-            except OSError:
-                shutil.copy2(source, destination)
+        # A private copy avoids changing read-only attributes on the stock SDK.
+        shutil.copyfile(source, destination)
         return str(destination)
 
-    # Dereference SDK symlinks: the completed prefix must own actual directories
-    # and files even when the provider removes its original installation.
     for source in base.iterdir():
         if source.name in (MARKER, "logs"):
             continue
@@ -232,11 +248,12 @@ def targeted(base, prefix, work, source, logs, metadata, libraries, codegen):
         raise RuntimeError("Private llvm-config resolves different static libraries")
     ar = sdk_tool(base, "llvm-ar")
     members = capture([ar, "t", codegen]).splitlines()
-    matches = [name for name in members if re.fullmatch(
-        r"CodeGenPrepare(?:\.cpp)?\.(?:o|obj)", name)]
+    matches = [(index, name) for index, name in enumerate(members) if re.fullmatch(
+        r"CodeGenPrepare(?:\.cpp)?\.(?:o|obj)", Path(name.replace("\\", "/")).name)]
     if len(matches) != 1:
         raise RuntimeError("Expected exactly one CodeGenPrepare object in the base archive")
-    member = matches[0]
+    member_index, source_member = matches[0]
+    member = Path(source_member.replace("\\", "/")).name
     compiler = arguments(os.environ.get("CXX", "cl" if os.name == "nt" else "c++"))
     if not compiler or shutil.which(compiler[0]) is None:
         raise RuntimeError("Missing native C++ compiler; Windows requires a VS developer shell")
@@ -246,7 +263,7 @@ def targeted(base, prefix, work, source, logs, metadata, libraries, codegen):
     if os.name == "nt":
         stock_object = work / ("stock-" + member)
         with stock_object.open("wb") as stream:
-            subprocess.run([ar, "p", codegen, member], stdout=stream, check=True)
+            subprocess.run([ar, "p", codegen, source_member], stdout=stream, check=True)
         directives = capture([sdk_tool(base, "llvm-readobj"), "--coff-directives", stock_object])
         if not re.search(r"(?:DEFAULTLIB:LIBCMT(?:\.lib)?|RuntimeLibrary=MT_StaticRelease)",
                          directives, re.IGNORECASE) or re.search(
@@ -277,7 +294,11 @@ def targeted(base, prefix, work, source, logs, metadata, libraries, codegen):
     shutil.copy2(codegen, private_archive)
     private_archive.chmod(private_archive.stat().st_mode | 0o200)
     run([ar, "rs", private_archive, objects[0]], logs / "archive.log")
-    if capture([ar, "t", private_archive]).splitlines() != members:
+    replaced = capture([ar, "t", private_archive]).splitlines()
+    if (len(replaced) != len(members)
+            or replaced[:member_index] != members[:member_index]
+            or replaced[member_index + 1:] != members[member_index + 1:]
+            or Path(replaced[member_index].replace("\\", "/")).name != member):
         raise RuntimeError("Archive replacement changed members other than CodeGenPrepare")
     destination = prefix / codegen.relative_to(base)
     private_archive.replace(destination)
@@ -320,6 +341,8 @@ def targeted(base, prefix, work, source, logs, metadata, libraries, codegen):
     (logs / "llc-dependencies.log").write_text(dependencies + "\n", encoding="utf-8")
     # Retain upstream and bundled dependency licensing with the modified SDK.
     licenses = prefix / "share" / "lyra-llvm-source-licenses"
+    if licenses.is_symlink():
+        raise RuntimeError("SDK license directory must not link to the stock installation")
     licenses.mkdir(parents=True, exist_ok=True)
     for path in source.rglob("*"):
         if path.is_file() and path.name.upper().startswith(("LICENSE", "NOTICE", "COPYING")):
@@ -328,7 +351,7 @@ def targeted(base, prefix, work, source, logs, metadata, libraries, codegen):
             shutil.copy2(path, destination)
     shutil.copy2(PATCH, licenses / PATCH.name)
     return {"compile_commands": commands, "link_command": list(map(str, link)),
-        "archive_member": member,
+        "base_archive_member": source_member, "archive_member": replaced[member_index],
         "outputs": {str(path.relative_to(prefix)): digest(path)
                     for path in (sdk_tool(prefix, "llc"), prefix / codegen.relative_to(base))},
         "boundary": "Patched llc and static LLVMCodeGen; clang/opt/shared LLVM remain stock"}

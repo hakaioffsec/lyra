@@ -38,6 +38,9 @@ jobs:
       - name: Check PR title and commit subjects
         run: python3 scripts/check_contribution.py
 
+      - name: Check SDK filesystem safety
+        run: python3 -m unittest discover -s scripts -p 'test_*.py'
+
   native:
     name: Native (${{ matrix.platform }})
     needs: policy

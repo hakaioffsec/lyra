@@ -44,8 +44,10 @@ export LYRA_LLVM_BIN="$LLVM_SYS_231_PREFIX/bin"
 cargo build --release --locked --bins
 ```
 
+On Unix, keep the stock SDK installed: unchanged files are linked.
+
 This reuses the stock SDK and rebuilds affected code generation in `llc` and
-the private static LLVM library, not the copied `clang` or `opt` executables.
+the private static LLVM library, not the stock `clang` or `opt` executables.
 Omit `--base-prefix` for a full-source build; use `--jobs N` to limit parallelism.
 Use the same private prefix for LLVM libraries, headers, and tools. Keep `lyra`,
 `lyra_wrapper`, and `lyra_linker` from the same build together. Install all three
