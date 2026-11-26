@@ -269,6 +269,7 @@ mod tests {
         for level in [OptimizationLevel::None, OptimizationLevel::Aggressive] {
             let context = Context::create();
             let mut module = parse(&context, ir);
+            super::super::util::set_native_test_target(&module);
             assert_eq!(
                 transform(&mut module, &mut StdRng::seed_from_u64(7), None).unwrap(),
                 1
@@ -321,6 +322,7 @@ mod tests {
         for seed in [0, 1, 42] {
             let context = Context::create();
             let mut module = parse(&context, ir);
+            super::super::util::set_native_test_target(&module);
             let mut counts = Counts::default();
             assert_eq!(
                 transform(
@@ -390,20 +392,28 @@ mod tests {
                 ret i64 %answer
             }
         "#;
+        eprintln!("byval fixture: parsing");
         let context = Context::create();
         let mut module = parse(&context, ir);
+        eprintln!("byval fixture: parsed");
+        super::super::util::set_native_test_target(&module);
+        eprintln!("byval fixture: native target configured");
         assert_eq!(
             transform(&mut module, &mut StdRng::seed_from_u64(42), None).unwrap(),
             1
         );
+        eprintln!("byval fixture: transformed");
         let engine = module
             .create_jit_execution_engine(OptimizationLevel::Aggressive)
             .unwrap();
+        eprintln!("byval fixture: JIT created");
         unsafe {
             let observe = engine
                 .get_function::<unsafe extern "C" fn(i64) -> i64>("observe")
                 .unwrap();
+            eprintln!("byval fixture: function resolved");
             for x in [i64::MIN, -17, 0, i64::MAX] {
+                eprintln!("byval fixture: calling with {x}");
                 assert_eq!(observe.call(x), (x.wrapping_add(15) ^ 31) ^ x);
             }
         }
