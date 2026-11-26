@@ -1,0 +1,14 @@
+target triple = "x86_64-unknown-linux-gnu"
+
+define ptr @nonstatic(ptr %target, ptr %slot) {
+entry:
+  %base = load ptr, ptr %slot, align 8
+  %p8 = getelementptr i8, ptr %base, i64 8
+  indirectbr ptr %target, [label %dest]
+dest:
+  %v8 = load i64, ptr %p8, align 8
+  %p16 = getelementptr i8, ptr %base, i64 16
+  %v16 = load ptr, ptr %p16, align 8
+  %p24 = getelementptr i8, ptr %base, i64 24
+  ret ptr %p24
+}

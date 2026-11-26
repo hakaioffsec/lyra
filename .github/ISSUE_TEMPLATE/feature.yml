@@ -1,0 +1,13 @@
+name: Feature request
+description: Propose a behavior change.
+body:
+  - type: textarea
+    id: use_case
+    attributes:
+      label: Use case
+      description: Describe the problem without private project names, paths, or inputs.
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Proposed behavior
+      description: Explain the expected behavior, limits, and alternatives.

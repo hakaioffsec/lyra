@@ -1,0 +1,14 @@
+--- a/llvm/lib/CodeGen/CodeGenPrepare.cpp
++++ b/llvm/lib/CodeGen/CodeGenPrepare.cpp
+@@ -8750,6 +8750,11 @@
+   auto *GEPIOpI = cast<Instruction>(GEPIOp);
+   if (GEPIOpI->getParent() != SrcBlock)
+     return false;
++  // A static alloca is a frame reference, not a live register whose lifetime
++  // unmerging can shorten. Address sinking can fold the resulting GEPs back
++  // into frame references, causing the two transforms to oscillate.
++  if (auto *AI = dyn_cast<AllocaInst>(GEPIOpI); AI && AI->isStaticAlloca())
++    return false;
+   // Check that GEP is used outside the block, meaning it's alive on the
+   // IndirectBr edge(s).
+   if (llvm::none_of(GEPI->users(), [&](User *Usr) {

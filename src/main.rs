@@ -552,24 +552,23 @@ fn absolutize(p: &Path) -> Result<PathBuf> {
 ///
 /// Resolution order (first match wins):
 ///   1. `$LYRA_LLVM_BIN` env var (explicit override)
-///   2. `$LLVM_SYS_211_PREFIX/bin` (set for llvm-sys / Homebrew builds)
+///   2. `$LLVM_SYS_231_PREFIX/bin` (the SDK used by llvm-sys)
 ///   3. In-tree build layouts relative to the lyra binary
-///   4. System-installed LLVM on PATH
+///   4. System-installed LLVM 23
 fn find_llvm_project_bin() -> Result<PathBuf> {
     if let Ok(v) = std::env::var("LYRA_LLVM_BIN") {
         let p = PathBuf::from(v);
-        if p.exists() {
-            return Ok(p);
-        }
+        anyhow::ensure!(has_llc(&p), "LYRA_LLVM_BIN must contain LLVM 23 llc");
+        return Ok(p);
     }
 
-    for var in ["LLVM_SYS_221_PREFIX", "LLVM_SYS_211_PREFIX"] {
-        if let Ok(v) = std::env::var(var) {
-            let p = PathBuf::from(v).join("bin");
-            if has_llc(&p) {
-                return Ok(p.canonicalize().unwrap_or(p));
-            }
-        }
+    if let Ok(v) = std::env::var("LLVM_SYS_231_PREFIX") {
+        let p = PathBuf::from(v).join("bin");
+        anyhow::ensure!(
+            has_llc(&p),
+            "LLVM_SYS_231_PREFIX must contain LLVM 23 llc in bin"
+        );
+        return Ok(p.canonicalize().unwrap_or(p));
     }
 
     let exe = std::env::current_exe().context("current_exe")?;
@@ -578,11 +577,11 @@ fn find_llvm_project_bin() -> Result<PathBuf> {
         .ok_or_else(|| anyhow::anyhow!("exe has no parent"))?;
 
     let mut candidates = vec![
-        // In-tree build: <repo>/target/release/lyra -> <repo>/llvm-project-22/build/bin
+        // In-tree build: <repo>/target/release/lyra -> <repo>/llvm-project-23/build/bin
         exe_dir
             .join("..")
             .join("..")
-            .join("llvm-project-22")
+            .join("llvm-project-23")
             .join("build")
             .join("bin"),
         exe_dir
@@ -592,16 +591,16 @@ fn find_llvm_project_bin() -> Result<PathBuf> {
             .join("build")
             .join("bin"),
         // Side-by-side install layouts.
-        exe_dir.join("llvm-project-22").join("build").join("bin"),
+        exe_dir.join("llvm-project-23").join("build").join("bin"),
         exe_dir.join("llvm-project").join("build").join("bin"),
         // CWD fallbacks.
-        PathBuf::from("llvm-project-22/build/bin"),
+        PathBuf::from("llvm-project-23/build/bin"),
         PathBuf::from("llvm-project/build/bin"),
     ];
 
-    // Homebrew (macOS): /opt/homebrew/opt/llvm@22/bin or /usr/local/opt/llvm@22/bin
+    // Homebrew installations are accepted only if llc reports LLVM 23.
     for prefix in ["/opt/homebrew/opt", "/usr/local/opt"] {
-        candidates.push(PathBuf::from(prefix).join("llvm@22").join("bin"));
+        candidates.push(PathBuf::from(prefix).join("llvm@23").join("bin"));
         candidates.push(PathBuf::from(prefix).join("llvm").join("bin"));
     }
 
@@ -612,8 +611,8 @@ fn find_llvm_project_bin() -> Result<PathBuf> {
     }
 
     anyhow::bail!(
-        "could not find LLVM bin directory with `llc`. Set $LYRA_LLVM_BIN or \
-         $LLVM_SYS_211_PREFIX, or install LLVM 22 (tried: {})",
+        "could not find LLVM 23 bin directory with `llc`. Set $LYRA_LLVM_BIN or \
+         $LLVM_SYS_231_PREFIX (tried: {})",
         candidates
             .iter()
             .map(|p| p.display().to_string())
@@ -623,7 +622,15 @@ fn find_llvm_project_bin() -> Result<PathBuf> {
 }
 
 fn has_llc(dir: &Path) -> bool {
-    dir.join("llc").exists() || dir.join("llc.exe").exists()
+    let llc = dir.join(format!("llc{}", std::env::consts::EXE_SUFFIX));
+    let Ok(output) = std::process::Command::new(llc).arg("--version").output() else {
+        return false;
+    };
+    output.status.success()
+        && String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .filter_map(|line| line.split_once("LLVM version "))
+            .any(|(_, version)| version.starts_with("23."))
 }
 
 /// Compute the path cargo will write the final artefact to given the

@@ -1,0 +1,18 @@
+name: Bug report
+description: Report incorrect behavior.
+body:
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction
+      description: Include a small input and exact commands. Remove private paths, inputs, and secrets.
+  - type: textarea
+    id: result
+    attributes:
+      label: Expected and actual behavior
+      description: Include relevant errors or logs.
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Include the Lyra revision, OS, architecture, Rust version, LLVM SDK version, and enabled passes.

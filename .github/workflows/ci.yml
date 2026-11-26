@@ -3,6 +3,7 @@ name: CI
 on:
   pull_request:
     branches: [main]
+    types: [opened, synchronize, reopened, edited]
   push:
     branches: [main]
   schedule:
@@ -17,14 +18,29 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  RUSTUP_TOOLCHAIN: '1.98.1'
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: '1'
+  CARGO_BUILD_JOBS: '4'
   CI_SUITE: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 'full' || 'smoke' }}
 
 jobs:
+  policy:
+    name: Contribution policy
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Check out full history
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check PR title and commit subjects
+        run: python3 scripts/check_contribution.py
+
   native:
     name: Native (${{ matrix.platform }})
+    needs: policy
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 120
     strategy:
@@ -56,6 +72,12 @@ jobs:
         with:
           python-version: '3.12'
 
+      - name: Cache pinned LLVM source download
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/lyra-toolchain/downloads/llvm-project-*.src.tar.xz
+          key: llvm-source-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'scripts/build_llvm.py', 'scripts/setup_ci.py', 'patches/*.patch') }}
+
       - name: Install and verify native toolchains
         timeout-minutes: 45
         run: |
@@ -69,7 +91,7 @@ jobs:
             ~/.cargo/registry/index
             ~/.cargo/registry/cache
             ~/.cargo/git/db
-          key: cargo-downloads-v1-${{ matrix.platform }}-rust-1.98.1-llvm-22-${{ hashFiles('Cargo.lock', 'test_project/Cargo.lock', 'test_dll_project/Cargo.lock') }}
+          key: cargo-downloads-${{ matrix.platform }}-${{ hashFiles('rust-toolchain.toml', 'scripts/setup_ci.py', 'scripts/build_llvm.py', 'Cargo.lock', 'test_project/Cargo.lock', 'test_dll_project/Cargo.lock') }}
 
       - name: Fetch locked dependencies
         timeout-minutes: 15
@@ -132,6 +154,7 @@ jobs:
           path: |
             ${{ runner.temp }}/lyra-ci-logs/
             ${{ runner.temp }}/lyra-smoke/
+            ${{ runner.temp }}/lyra-toolchain/private/logs/
             !${{ runner.temp }}/lyra-smoke/**/target/**
             !${{ runner.temp }}/lyra-smoke/**/.git/**
           if-no-files-found: error
@@ -141,16 +164,21 @@ jobs:
   required:
     name: CI required
     if: always()
-    needs: [native]
+    needs: [policy, native]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
-      - name: Require every native platform to succeed
+      - name: Require policy and every native platform
         env:
           NATIVE_RESULT: ${{ needs.native.result }}
+          POLICY_RESULT: ${{ needs.policy.result }}
         run: |
+          if [ "$POLICY_RESULT" != success ]; then
+            echo "Contribution policy did not succeed: $POLICY_RESULT"
+            exit 1
+          fi
           if [ "$NATIVE_RESULT" != success ]; then
             echo "Native matrix did not fully succeed: $NATIVE_RESULT"
             exit 1
           fi
-          echo 'All three native platforms passed.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Contribution policy and all three native platforms passed.' >> "$GITHUB_STEP_SUMMARY"

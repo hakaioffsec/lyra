@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""Install and verify the native LLVM 22 / Rust toolchain on GitHub runners."""
+"""Install the pinned native Rust toolchain and prepare the private LLVM SDK."""
 
 import hashlib
+import json
 import os
 from pathlib import Path
 import platform
@@ -10,16 +11,25 @@ import shutil
 import subprocess
 import sys
 import tarfile
+import tomllib
 import urllib.request
 
-
-RUST_VERSION = "1.98.1"
-LLVM_MAJOR = "22"
-WINDOWS_LLVM_URL = (
-    "https://github.com/llvm/llvm-project/releases/download/llvmorg-22.1.4/"
-    "clang%2Bllvm-22.1.4-x86_64-pc-windows-msvc.tar.xz"
+from build_llvm import (
+    ARCHIVE as LLVM_SOURCE_ARCHIVE,
+    SHA256 as LLVM_SOURCE_SHA256,
+    URL as LLVM_SOURCE_URL,
+    VERSION as LLVM_VERSION,
 )
-WINDOWS_LLVM_SHA256 = "ed775bdaea7087c6c1aeac9498352cfcd8610d92dc4fe9eda9aecb15ce712a2c"
+
+
+ROOT = Path(__file__).resolve().parent.parent
+RUST_VERSION = tomllib.loads((ROOT / "rust-toolchain.toml").read_text(encoding="utf-8"))["toolchain"]["channel"]
+LLVM_MAJOR = LLVM_VERSION.split(".")[0]
+WINDOWS_LLVM_URL = (
+    f"https://github.com/llvm/llvm-project/releases/download/llvmorg-{LLVM_VERSION}/"
+    f"clang%2Bllvm-{LLVM_VERSION}-x86_64-pc-windows-msvc.tar.xz"
+)
+WINDOWS_LLVM_SHA256 = "16af05919cf36958dfb4ddaa4fc4d9d4ff577f5daeb76bc112ea49cd8ced82b2"
 APT_KEY_FINGERPRINT = "6084F3CF814B57C1CF12EFD515CF4D18AF4F7421"
 TARGETS = {
     ("Linux", "x86_64"): "x86_64-unknown-linux-gnu",
@@ -84,32 +94,53 @@ def install_linux(temp: Path) -> Path:
     source = temp / "apt-llvm.list"
     source.write_text(
         "deb [arch=amd64 signed-by=/usr/share/keyrings/apt-llvm.asc] "
-        "https://apt.llvm.org/noble/ llvm-toolchain-noble-22 main\n",
+        f"https://apt.llvm.org/noble/ llvm-toolchain-noble-{LLVM_MAJOR} main\n",
         encoding="utf-8",
     )
     run("sudo", "install", "-m", "644", str(source), "/etc/apt/sources.list.d/apt-llvm.list")
     run("sudo", "apt-get", "update")
+    packages = [
+        f"clang-{LLVM_MAJOR}", f"lld-{LLVM_MAJOR}", f"llvm-{LLVM_MAJOR}",
+        f"llvm-{LLVM_MAJOR}-dev", f"llvm-{LLVM_MAJOR}-tools",
+        f"libpolly-{LLVM_MAJOR}-dev", f"libclang-rt-{LLVM_MAJOR}-dev",
+    ]
+    pinned = []
+    for package in packages:
+        versions = run("apt-cache", "madison", package, capture=True)
+        matches = [
+            line.split("|")[1].strip() for line in versions.splitlines()
+            if len(line.split("|")) >= 3
+            and line.split("|")[1].strip().split(":")[-1].split("~")[0].split("-")[0] == LLVM_VERSION
+        ]
+        if not matches:
+            raise RuntimeError(f"No exact LLVM {LLVM_VERSION} package available: {package}")
+        pinned.append(f"{package}={matches[0]}")
     run(
         "sudo", "apt-get", "install", "-y", "--no-install-recommends",
-        "build-essential", "pkg-config", "clang-22", "lld-22", "llvm-22",
-        "llvm-22-dev", "llvm-22-tools", "libpolly-22-dev", "libclang-rt-22-dev",
+        "build-essential", "pkg-config", "cmake", "ninja-build", *pinned,
         "libffi-dev", "libzstd-dev", "zlib1g-dev", "libxml2-dev", "libedit-dev", "libncurses-dev",
     )
-    return Path("/usr/lib/llvm-22")
+    return Path(f"/usr/lib/llvm-{LLVM_MAJOR}")
 
 
 def install_macos() -> Path:
-    run("xcrun", "--show-sdk-path")
-    run("brew", "install", "llvm@22", "lld@22", "libffi", "zstd", "zlib", "libxml2", "pkgconf")
-    prefix = Path(run("brew", "--prefix", "llvm@22", capture=True))
-    libraries = [prefix / "lib"]
-    for dependency in ("libffi", "zstd", "zlib", "libxml2"):
-        libraries.append(Path(run("brew", "--prefix", dependency, capture=True)) / "lib")
-    # llvm-sys forwards -l system dependencies, but Homebrew's keg-only libraries
-    # are not in the native linker's default search path.
-    export("RUSTFLAGS", " ".join(f"-Lnative={path}" for path in libraries))
+    export("SDKROOT", run("xcrun", "--sdk", "macosx", "--show-sdk-path", capture=True))
+    formulae = (f"llvm@{LLVM_MAJOR}", f"lld@{LLVM_MAJOR}")
+    info = json.loads(run("brew", "info", "--json=v2", *formulae, capture=True))
+    for formula in info["formulae"]:
+        if formula["versions"]["stable"] != LLVM_VERSION:
+            raise RuntimeError(f"Expected Homebrew {formula['name']} {LLVM_VERSION}, got {formula['versions']['stable']}")
+    run("brew", "install", "--force-bottle", *formulae, "cmake", "ninja", "pkgconf")
+    prefix = Path(run("brew", "--prefix", formulae[0], capture=True))
+    libraries = []
+    for dependency in run("brew", "deps", "--installed", formulae[0], capture=True).splitlines():
+        library = Path(run("brew", "--prefix", dependency, capture=True)) / "lib"
+        if library.is_dir():
+            libraries.append(library)
+    # llvm-sys needs explicit paths for keg-only system dependencies.
+    export("CARGO_ENCODED_RUSTFLAGS", "\x1f".join(f"-Lnative={path}" for path in libraries))
     export("LIBRARY_PATH", os.pathsep.join(str(path) for path in libraries))
-    add_path(Path(run("brew", "--prefix", "lld@22", capture=True)) / "bin")
+    add_path(Path(run("brew", "--prefix", formulae[1], capture=True)) / "bin")
     return prefix
 
 
@@ -147,9 +178,9 @@ def initialize_msvc(temp: Path) -> None:
 
 def install_windows(temp: Path) -> Path:
     initialize_msvc(temp)
-    archive = temp / "llvm-22.1.4.tar.xz"
+    archive = temp / f"llvm-{LLVM_VERSION}.tar.xz"
     download(WINDOWS_LLVM_URL, archive, WINDOWS_LLVM_SHA256)
-    prefix = temp / "llvm-22"
+    prefix = temp / "stock"
     unpacked = temp / "llvm-unpack"
     unpacked.mkdir()
     # Avoid Git tar's drive-letter parsing and native tar's stalled extraction.
@@ -167,20 +198,13 @@ def install_windows(temp: Path) -> Path:
     unpacked.rmdir()
     print("LLVM archive extraction complete", flush=True)
     archive.unlink()
+    return prefix
+
+
+def configure_windows_linker(prefix: Path) -> None:
     llvm_config = prefix / "bin/llvm-config.exe"
     system_libs = shlex.split(run(str(llvm_config), "--link-static", "--system-libs", capture=True), posix=False)
     print(f"LLVM system libraries: {system_libs}", flush=True)
-    # The official archive declares xml2s even when its optional XML support is
-    # unused and the archive omits that library. Supply only an empty archive;
-    # any real XML symbol reference still fails at link time, never a fake API.
-    declared = {Path(item.strip('"')).name.lower() for item in system_libs}
-    xml_library = prefix / "lib/xml2s.lib"
-    if "xml2s.lib" in declared and not xml_library.exists():
-        source = temp / "empty-xml2.c"
-        source.write_text("/* No XML implementations: unresolved XML calls must fail. */\n", encoding="utf-8")
-        obj = temp / "empty-xml2.obj"
-        run(str(prefix / "bin/clang-cl.exe"), "/nologo", "/c", str(source), f"/Fo{obj}")
-        run("lib.exe", "/nologo", f"/OUT:{xml_library}", str(obj))
     search_paths = [prefix / "lib", *(Path(path) for path in os.environ.get("LIB", "").split(os.pathsep) if path)]
     for library in system_libs:
         library = library.strip('"')
@@ -196,7 +220,6 @@ def install_windows(temp: Path) -> Path:
     rustflags = ["-C", "target-feature=+crt-static"]
     rustflags.extend(f"-Lnative={path}" for path in search_paths)
     export("CARGO_ENCODED_RUSTFLAGS", "\x1f".join(rustflags))
-    return prefix
 
 
 def main() -> None:
@@ -207,12 +230,31 @@ def main() -> None:
     temp = Path(os.environ["RUNNER_TEMP"]) / "lyra-toolchain"
     temp.mkdir(parents=True, exist_ok=True)
     if host[0] == "Linux":
-        prefix = install_linux(temp)
+        stock = install_linux(temp)
     elif host[0] == "Darwin":
-        prefix = install_macos()
+        stock = install_macos()
     else:
-        prefix = install_windows(temp)
+        stock = install_windows(temp)
     suffix = ".exe" if host[0] == "Windows" else ""
+    version = run(str(stock / "bin" / ("llvm-config" + suffix)), "--version", capture=True)
+    if version != LLVM_VERSION:
+        raise RuntimeError(f"Expected stock LLVM {LLVM_VERSION}, got {version}")
+    add_path(stock / "bin")
+    if host[0] != "Windows":
+        export("CXX", shlex.quote(str(stock / "bin/clang++")))
+    downloads = temp / "downloads"
+    downloads.mkdir(exist_ok=True)
+    source = downloads / LLVM_SOURCE_ARCHIVE
+    if not source.exists():
+        download(LLVM_SOURCE_URL, source, LLVM_SOURCE_SHA256)
+    prefix = temp / "private"
+    run(
+        sys.executable, str(ROOT / "scripts/build_llvm.py"),
+        "--prefix", str(prefix), "--base-prefix", str(stock),
+        "--work-dir", str(temp / "build"), "--source-archive", str(source), "--jobs", "4",
+    )
+    if host[0] == "Windows":
+        configure_windows_linker(prefix)
     for tool in ("llvm-config", "clang", "clang++", "opt", "llc", "llvm-as", "llvm-dis", "llvm-ar"):
         if not (prefix / "bin" / (tool + suffix)).is_file():
             raise RuntimeError(f"LLVM development tool missing: {tool}")
@@ -220,10 +262,10 @@ def main() -> None:
         if not (prefix / "include" / header).is_file():
             raise RuntimeError(f"LLVM development header missing: {header}")
     version = run(str(prefix / "bin" / ("llvm-config" + suffix)), "--version", capture=True)
-    if version.split(".")[0] != LLVM_MAJOR:
-        raise RuntimeError(f"Expected LLVM {LLVM_MAJOR}, got {version}")
+    if version != LLVM_VERSION:
+        raise RuntimeError(f"Expected private LLVM {LLVM_VERSION}, got {version}")
     add_path(prefix / "bin")
-    export("LLVM_SYS_221_PREFIX", str(prefix))
+    export("LLVM_SYS_231_PREFIX", str(prefix))
     export("LYRA_LLVM_BIN", str(prefix / "bin"))
     export("RUSTUP_TOOLCHAIN", RUST_VERSION)
     run("rustup", "toolchain", "install", RUST_VERSION, "--profile", "minimal", "--component", "rustfmt")

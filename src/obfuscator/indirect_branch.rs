@@ -91,7 +91,7 @@ pub fn apply<'ctx>(context: &'ctx Context, module: &mut Module<'ctx>) -> Result<
                 for block in function.get_basic_blocks() {
                     if block
                         .get_terminator()
-                        .is_some_and(|term| term.get_opcode() == InstructionOpcode::Br)
+                        .is_some_and(|term| is_direct_branch(&term))
                     {
                         counts.considered += 1;
                         counts.skip("function_exclusion", 1);
@@ -169,7 +169,7 @@ fn transform_function<'ctx>(
         let Some(term) = bb.get_terminator() else {
             continue;
         };
-        if term.get_opcode() != InstructionOpcode::Br {
+        if !is_direct_branch(&term) {
             continue;
         }
         if let Some(counts) = counts.as_deref_mut() {
@@ -188,7 +188,7 @@ fn transform_function<'ctx>(
                 uncond_brs.push((bb, term, dest));
             }
             3 => {
-                // conditional: LLVM stores operands as [cond, false_dest, true_dest]
+                // conditional: LLVM 23 stores operands as [cond, true_dest, false_dest]
                 let Some(Operand::Value(BasicValueEnum::IntValue(cond_iv))) = term.get_operand(0)
                 else {
                     if let Some(counts) = counts.as_deref_mut() {
@@ -196,13 +196,13 @@ fn transform_function<'ctx>(
                     }
                     continue;
                 };
-                let Some(Operand::Block(false_dest)) = term.get_operand(1) else {
+                let Some(Operand::Block(true_dest)) = term.get_operand(1) else {
                     if let Some(counts) = counts.as_deref_mut() {
                         counts.skip("unsupported_branch_shape", 1);
                     }
                     continue;
                 };
-                let Some(Operand::Block(true_dest)) = term.get_operand(2) else {
+                let Some(Operand::Block(false_dest)) = term.get_operand(2) else {
                     if let Some(counts) = counts.as_deref_mut() {
                         counts.skip("unsupported_branch_shape", 1);
                     }
@@ -456,6 +456,14 @@ fn drop_gep_nuw_flags(function: &FunctionValue<'_>) {
             LLVMGEPSetNoWrapFlags(raw, LLVMGEPGetNoWrapFlags(raw) & !LLVMGEPFlagNUW);
         }
     }
+}
+
+/// A direct `br`, conditional or unconditional; LLVM 23 splits the opcode.
+fn is_direct_branch(term: &InstructionValue<'_>) -> bool {
+    matches!(
+        term.get_opcode(),
+        InstructionOpcode::UncondBr | InstructionOpcode::CondBr
+    )
 }
 
 /// Produce a stable, key-usable integer for a `BasicBlock` identity.

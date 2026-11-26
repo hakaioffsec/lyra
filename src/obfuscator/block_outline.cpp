@@ -193,7 +193,7 @@ extern "C" int32_t lyra_outline_function(LLVMValueRef FRef, uint64_t Seed,
       continue;
     }
     CodeExtractor CE({&BB}, &DT, false, nullptr, nullptr, nullptr, false,
-                     false, nullptr, "lyra_outline");
+                     false, nullptr, {}, "lyra_outline");
     if (!CE.isEligible()) {
       Skip(ExtractorIneligible);
       continue;
@@ -238,7 +238,7 @@ extern "C" int32_t lyra_outline_function(LLVMValueRef FRef, uint64_t Seed,
     return 0;
   Skip(SelectionBudget, Eligible - 1);
   CodeExtractor CE({Selected}, &DT, false, nullptr, nullptr, nullptr, false,
-                   false, nullptr, "lyra_outline");
+                   false, nullptr, {}, "lyra_outline");
   CodeExtractorAnalysisCache Cache(*F);
   Function *Helper = CE.extractCodeRegion(Cache);
   if (!Helper)

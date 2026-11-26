@@ -817,7 +817,7 @@ mod tests {
     fn linked_executable_discards_unreachable_code_and_data() {
         let llvm_bin = env::var_os("LYRA_LLVM_BIN")
             .map(PathBuf::from)
-            .or_else(|| env::var_os("LLVM_SYS_221_PREFIX").map(|p| PathBuf::from(p).join("bin")))
+            .or_else(|| env::var_os("LLVM_SYS_231_PREFIX").map(|p| PathBuf::from(p).join("bin")))
             .unwrap_or_default();
         let llc = llvm_bin.join(format!("llc{}", env::consts::EXE_SUFFIX));
         let clang = llvm_bin.join(format!("clang{}", env::consts::EXE_SUFFIX));
@@ -873,7 +873,7 @@ mod tests {
     fn rust_gnullvm_target_produces_a_windows_amd64_object() {
         let llvm_bin = env::var_os("LYRA_LLVM_BIN")
             .map(PathBuf::from)
-            .or_else(|| env::var_os("LLVM_SYS_221_PREFIX").map(|p| PathBuf::from(p).join("bin")))
+            .or_else(|| env::var_os("LLVM_SYS_231_PREFIX").map(|p| PathBuf::from(p).join("bin")))
             .unwrap_or_default();
         let llc = llvm_bin.join(format!("llc{}", env::consts::EXE_SUFFIX));
         let directory = env::temp_dir().join(format!(
@@ -902,7 +902,7 @@ mod tests {
     fn long_local_names_preserve_native_branch_results() {
         let llvm_bin = env::var_os("LYRA_LLVM_BIN")
             .map(PathBuf::from)
-            .or_else(|| env::var_os("LLVM_SYS_221_PREFIX").map(|p| PathBuf::from(p).join("bin")))
+            .or_else(|| env::var_os("LLVM_SYS_231_PREFIX").map(|p| PathBuf::from(p).join("bin")))
             .unwrap_or_default();
         let llc = llvm_bin.join(format!("llc{}", env::consts::EXE_SUFFIX));
         let clang = llvm_bin.join(format!("clang{}", env::consts::EXE_SUFFIX));
