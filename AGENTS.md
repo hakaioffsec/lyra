@@ -30,11 +30,11 @@ optimization, removing a pass, or substituting an unqualified stock toolchain.
 SDK changes require compiler regressions and native Linux, macOS, and Windows
 runtime checks; IR verification or a successful Rust build alone is insufficient.
 
-Prefer `--base-prefix` with an exact stock LLVM/Clang 23.1.6 release SDK built
-with assertions off. Include installed/generated headers, static LLVM archives,
+Prefer `--base-prefix` with an exact stock LLVM/Clang 23.1.6 SDK.
+Use an optimized build with matching generated headers, static LLVM archives,
 `llvm-config`, `llvm-ar`, and `llvm-readobj`. Install the system libraries reported
 by `llvm-config --link-static --system-libs` and use a native C++ compiler.
-The builder prepares a separate private SDK and rebuilds affected code
+Preparation preserves the SDK's assertion configuration and rebuilds affected code
 generation in `llc` and the static LLVMCodeGen library. Consumers must relink
 statically; Lyra does so. Stock shared libraries remain for `clang` and
 `opt`, whose code generation is not patched. The builder checks that patched
@@ -89,6 +89,10 @@ not native Windows or macOS loader qualification. To verify retained textual IR:
 ```
 
 ## Windows build environment
+
+Use the [LLVM 23.1.6 development archive](https://github.com/llvm/llvm-project/releases/download/llvmorg-23.1.6/clang%2Bllvm-23.1.6-x86_64-pc-windows-msvc.tar.xz),
+not the compiler-only installer. Preparation builds the missing static dependencies
+and repairs `llvm-config` metadata without a full LLVM build.
 
 Use an x64 Visual Studio developer PowerShell with native build tools and the
 Windows SDK; `LIB` must contain its real library directories. Prepare the SDK with

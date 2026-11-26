@@ -151,6 +151,47 @@ def config(prefix, *options):
     return capture([sdk_tool(prefix, "llvm-config"), *options])
 
 
+def sdk_configuration(prefix):
+    return {
+        "cxxflags": config(prefix, "--cxxflags"), "ldflags": config(prefix, "--ldflags"),
+        "system_libs": config(prefix, "--link-static", "--system-libs"),
+        "build_mode": config(prefix, "--build-mode"),
+        "assertions": config(prefix, "--assertion-mode"),
+        "rtti": config(prefix, "--has-rtti"), "host_target": config(prefix, "--host-target"),
+    }
+
+
+def replacement_flags(metadata, windows):
+    mode, assertions = metadata["build_mode"], metadata["assertions"]
+    if mode not in ("Release", "RelWithDebInfo", "MinSizeRel") or assertions not in ("ON", "OFF"):
+        raise RuntimeError(
+            f"Unsupported base SDK configuration: build mode {mode!r}, assertions {assertions!r}; "
+            "targeted preparation requires Release, RelWithDebInfo, or MinSizeRel with "
+            "assertion mode ON/OFF. Select a matching optimized SDK or omit --base-prefix "
+            "to build from source.")
+    # llvm-config carries the SDK's language, standard-library ABI, RTTI and EH
+    # flags. Installed generated headers remain authoritative for ABI checks.
+    flags = arguments(metadata["cxxflags"])
+    if windows:
+        flags += ["/std:c++17", "/O1" if mode == "MinSizeRel" else "/O2",
+                  "/UNDEBUG" if assertions == "ON" else "/DNDEBUG",
+                  "/MT", "/DLLVM_BUILD_STATIC"]
+        if mode == "RelWithDebInfo":
+            flags += ["/Zi"]
+    else:
+        flags += ["-Os" if mode == "MinSizeRel" else "-O2",
+                  "-UNDEBUG" if assertions == "ON" else "-DNDEBUG",
+                  "-fPIC", "-fvisibility-inlines-hidden", "-DLLVM_BUILD_STATIC"]
+        if mode == "RelWithDebInfo":
+            flags += ["-g"]
+    return flags
+
+
+def write_msvc_response(path, command):
+    # cl applies /link only to the remainder of its response-file line.
+    path.write_text(subprocess.list2cmdline(list(map(str, command))) + "\n", encoding="utf-8")
+
+
 def base_sdk(base):
     if config(base, "--version") != VERSION:
         raise RuntimeError(f"Base SDK must be exactly LLVM {VERSION}")
@@ -175,20 +216,14 @@ def base_sdk(base):
     headers = sorted(path for path in includedir.rglob("*") if path.is_file())
     if not headers or not (includedir / "llvm/Config/llvm-config.h").is_file():
         raise RuntimeError("Base SDK lacks installed LLVM configuration headers")
+    cmake_files = [path for path in (libdir / "cmake/llvm").rglob("*") if path.is_file()]
     # Hash all static link inputs and installed headers, not just version text.
-    files = sorted(set(libraries + headers + [sdk_tool(base, name) for name in tools]))
+    files = sorted(set(libraries + headers + cmake_files + [sdk_tool(base, name) for name in tools]))
     provider = [path for path in base.iterdir() if path.is_file()]
     if (base / ".brew").is_dir():
         provider += [path for path in (base / ".brew").rglob("*") if path.is_file()]
     hashes = {str(path.relative_to(base)): digest(path) for path in files + sorted(provider)}
-    return {
-        "prefix": str(base), "files": hashes,
-        "cxxflags": config(base, "--cxxflags"), "ldflags": config(base, "--ldflags"),
-        "system_libs": config(base, "--link-static", "--system-libs"),
-        "build_mode": config(base, "--build-mode"),
-        "assertions": config(base, "--assertion-mode"),
-        "rtti": config(base, "--has-rtti"), "host_target": config(base, "--host-target"),
-    }, libraries, codegen[0]
+    return {"prefix": str(base), "files": hashes, **sdk_configuration(base)}, libraries, codegen[0]
 
 
 def clone_sdk(base, prefix):
@@ -238,6 +273,10 @@ def clone_sdk(base, prefix):
 
 def targeted(base, prefix, work, source, logs, metadata, libraries, codegen):
     clone_sdk(base, prefix)
+    preparation = {}
+    if os.name == "nt":
+        from windows_llvm_sdk import prepare
+        preparation = prepare(base, prefix, work, source, metadata, run, capture)
     if (Path(config(prefix, "--prefix")).resolve() != prefix.resolve()
             or Path(config(prefix, "--libdir")).resolve() != (prefix / "lib").resolve()
             or Path(config(prefix, "--includedir")).resolve() != (prefix / "include").resolve()):
@@ -246,6 +285,11 @@ def targeted(base, prefix, work, source, logs, metadata, libraries, codegen):
     actual = arguments(config(prefix, "--link-static", "--libnames", "all"))
     if actual != [path.name for path in expected]:
         raise RuntimeError("Private llvm-config resolves different static libraries")
+    private_configuration = sdk_configuration(prefix)
+    for key in ("build_mode", "assertions", "rtti", "host_target"):
+        if private_configuration[key] != metadata[key]:
+            raise RuntimeError(f"Private SDK changed base {key}: "
+                               f"{metadata[key]!r} -> {private_configuration[key]!r}")
     ar = sdk_tool(base, "llvm-ar")
     members = capture([ar, "t", codegen]).splitlines()
     matches = [(index, name) for index, name in enumerate(members) if re.fullmatch(
@@ -257,9 +301,7 @@ def targeted(base, prefix, work, source, logs, metadata, libraries, codegen):
     compiler = arguments(os.environ.get("CXX", "cl" if os.name == "nt" else "c++"))
     if not compiler or shutil.which(compiler[0]) is None:
         raise RuntimeError("Missing native C++ compiler; Windows requires a VS developer shell")
-    flags = arguments(metadata["cxxflags"])
-    if metadata["build_mode"] != "Release" or metadata["assertions"] != "OFF":
-        raise RuntimeError("Targeted preparation requires a release SDK without assertions")
+    flags = replacement_flags(private_configuration, os.name == "nt")
     if os.name == "nt":
         stock_object = work / ("stock-" + member)
         with stock_object.open("wb") as stream:
@@ -270,10 +312,6 @@ def targeted(base, prefix, work, source, logs, metadata, libraries, codegen):
                              r"(?:DEFAULTLIB:MSVCRT|RuntimeLibrary=MD_|LIBCMTD)", directives,
                              re.IGNORECASE):
             raise RuntimeError("Windows base SDK must use release static MSVC CRT (/MT)")
-        flags += ["/std:c++17", "/O2", "/DNDEBUG", "/MT", "/DLLVM_BUILD_STATIC"]
-    else:
-        flags += ["-O2", "-DNDEBUG", "-fPIC", "-fvisibility-inlines-hidden",
-                  "-DLLVM_BUILD_STATIC"]
     objects = []
     commands = []
     for relative, name in (("lib/CodeGen/CodeGenPrepare.cpp", member),
@@ -302,9 +340,9 @@ def targeted(base, prefix, work, source, logs, metadata, libraries, codegen):
         raise RuntimeError("Archive replacement changed members other than CodeGenPrepare")
     destination = prefix / codegen.relative_to(base)
     private_archive.replace(destination)
-    system = arguments(metadata["system_libs"])
+    system = arguments(private_configuration["system_libs"])
     link = [*compiler, *objects[1:]]
-    ldflags = arguments(metadata["ldflags"])
+    ldflags = arguments(private_configuration["ldflags"])
     if os.name == "nt":
         link += ["/MT", f"/Fe{work / 'llc.exe'}", "/link", *ldflags, *expected, *system]
     else:
@@ -322,8 +360,7 @@ def targeted(base, prefix, work, source, logs, metadata, libraries, codegen):
         link += ["-o", work / "llc"]
     if os.name == "nt":
         response = work / "link.rsp"
-        response.write_text("\n".join(subprocess.list2cmdline([str(arg)])
-                                      for arg in link[len(compiler):]), encoding="utf-8")
+        write_msvc_response(response, link[len(compiler):])
         run([*compiler, f"@{response}"], logs / "link.log")
     else:
         run(link, logs / "link.log")
@@ -350,10 +387,16 @@ def targeted(base, prefix, work, source, logs, metadata, libraries, codegen):
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(path, destination)
     shutil.copy2(PATCH, licenses / PATCH.name)
-    return {"compile_commands": commands, "link_command": list(map(str, link)),
+    outputs = dict(preparation.get("outputs", {}))
+    outputs.update({str(path.relative_to(prefix)): digest(path) for path in
+                    (sdk_tool(prefix, "llc"), sdk_tool(prefix, "llvm-config"),
+                     prefix / codegen.relative_to(base))})
+    outputs.update({str(path.relative_to(prefix)): digest(path)
+                    for path in licenses.rglob("*") if path.is_file()})
+    return {**preparation, "compile_commands": commands, "link_command": list(map(str, link)),
+        "configuration": private_configuration,
         "base_archive_member": source_member, "archive_member": replaced[member_index],
-        "outputs": {str(path.relative_to(prefix)): digest(path)
-                    for path in (sdk_tool(prefix, "llc"), prefix / codegen.relative_to(base))},
+        "outputs": outputs,
         "boundary": "Patched llc and static LLVMCodeGen; clang/opt/shared LLVM remain stock"}
 
 
@@ -383,11 +426,14 @@ def main():
                     or path.resolve() in base.parents for path in (prefix, work)):
         parser.error("base SDK, private prefix and work directory must be separate")
     metadata, libraries, codegen = base_sdk(base) if base else (None, None, None)
+    if metadata:
+        replacement_flags(metadata, os.name == "nt")
     compiler = arguments(os.environ.get("CXX", "cl" if os.name == "nt" else "c++"))
     compiler_version = subprocess.run(
         [*compiler, *([] if os.name == "nt" else ["--version"])],
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, check=False).stdout
-    identity = {"schema": 2, "mode": "targeted" if base else "source",
+    identity = {"schema": 3, "mode": "targeted" if base else "source",
+                "builder_sha256": digest(Path(__file__)),
                 "version": VERSION, "source_url": URL,
                 "source_sha256": SHA256, "source_size": SIZE,
                 "patch_sha256": digest(PATCH), "cmake_options": OPTIONS if not base else None,
@@ -396,6 +442,8 @@ def main():
                 "compiler_environment": {key: os.environ.get(key) for key in
                     ("CC", "CXX", "CFLAGS", "CXXFLAGS", "LDFLAGS", "SDKROOT",
                      "MACOSX_DEPLOYMENT_TARGET", "INCLUDE", "LIB", "CL", "_CL_")}}
+    if base and os.name == "nt":
+        identity["windows_helper_sha256"] = digest(Path(__file__).with_name("windows_llvm_sdk.py"))
     state = claim(prefix, identity)
     logs = prefix / "logs"
     logs.mkdir(exist_ok=True)
@@ -406,7 +454,7 @@ def main():
         regress(prefix, logs)
         print(f"Verified cached LLVM SDK: {prefix}", flush=True)
         return
-    for executable in (() if base else ("cmake", "ninja")):
+    for executable in (("cmake", "ninja") if not base or os.name == "nt" else ()):
         if shutil.which(executable) is None:
             raise RuntimeError(f"Missing prerequisite: {executable}")
     if not any(shutil.which(name) for name in ("clang++", "g++", "cl")):
@@ -440,9 +488,14 @@ def main():
                 required = {f"{source.name}/llvm/{name}" for name in (
                     "lib/CodeGen/CodeGenPrepare.cpp", "tools/llc/llc.cpp",
                     "tools/llc/NewPMDriver.cpp", "tools/llc/NewPMDriver.h")}
-                members = [member for member in members if member.isfile() and (
-                    member.name in required or Path(member.name).name.upper().startswith(
-                        ("LICENSE", "NOTICE", "COPYING")))]
+                configure_trees = {f"{source.name}/{name}" for name in
+                                   ("llvm", "cmake", "third-party")} if os.name == "nt" else set()
+                members = [member for member in members if (
+                    any(member.name == tree or member.name.startswith(tree + "/")
+                        for tree in configure_trees)
+                    or member.isfile() and (member.name in required
+                        or Path(member.name).name.upper().startswith(
+                            ("LICENSE", "NOTICE", "COPYING"))))]
                 if not required.issubset(member.name for member in members):
                     raise RuntimeError("Pinned source archive lacks targeted compiler sources")
             tar.extractall(work, members=members, filter="data")

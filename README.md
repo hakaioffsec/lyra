@@ -29,8 +29,8 @@ CodeGenPrepare fix in `patches/` to avoid a rewrite cycle with static allocas
 and indirect branches. Do not disable optimization passes to work around it.
 
 Install rustup, Python 3.12+, Git, CMake, Ninja, and a native C++ compiler and
-platform SDK. Prefer an exact stock LLVM/Clang 23.1.6 release SDK with assertions
-off, static libraries, and development headers; see the
+platform SDK. Prefer an exact stock LLVM/Clang 23.1.6 optimized SDK with static
+libraries and development headers; see the
 [SDK prerequisites](AGENTS.md#toolchain-and-compiler-patch). Replace the prefixes
 below with separate absolute directories. On macOS, first set
 `export SDKROOT="$(xcrun --sdk macosx --show-sdk-path)"`.

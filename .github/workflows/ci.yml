@@ -75,11 +75,15 @@ jobs:
         with:
           python-version: '3.12'
 
+      - name: Identify pinned source download
+        id: llvm_source
+        run: python -c "import sys; sys.path.insert(0, 'scripts'); from build_llvm import SHA256; print('sha256=' + SHA256)" >> "$GITHUB_OUTPUT"
+
       - name: Cache pinned LLVM source download
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/lyra-toolchain/downloads/llvm-project-*.src.tar.xz
-          key: llvm-source-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'scripts/build_llvm.py', 'scripts/setup_ci.py', 'patches/*.patch') }}
+          key: llvm-source-${{ runner.os }}-${{ steps.llvm_source.outputs.sha256 }}
 
       - name: Install and verify native toolchains
         timeout-minutes: 45
@@ -94,7 +98,8 @@ jobs:
             ~/.cargo/registry/index
             ~/.cargo/registry/cache
             ~/.cargo/git/db
-          key: cargo-downloads-${{ matrix.platform }}-${{ hashFiles('rust-toolchain.toml', 'scripts/setup_ci.py', 'scripts/build_llvm.py', 'Cargo.lock', 'test_project/Cargo.lock', 'test_dll_project/Cargo.lock') }}
+          key: cargo-downloads-${{ matrix.platform }}-${{ hashFiles('rust-toolchain.toml', '**/Cargo.lock') }}
+          restore-keys: cargo-downloads-${{ matrix.platform }}-
 
       - name: Fetch locked dependencies
         timeout-minutes: 15

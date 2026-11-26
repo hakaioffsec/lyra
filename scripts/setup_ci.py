@@ -16,6 +16,7 @@ import urllib.request
 
 from build_llvm import (
     ARCHIVE as LLVM_SOURCE_ARCHIVE,
+    MARKER as LLVM_SDK_MARKER,
     SHA256 as LLVM_SOURCE_SHA256,
     URL as LLVM_SOURCE_URL,
     VERSION as LLVM_VERSION,
@@ -249,11 +250,18 @@ def main() -> None:
     if not source.exists():
         download(LLVM_SOURCE_URL, source, LLVM_SOURCE_SHA256)
     prefix = temp / "private"
-    run(
-        sys.executable, str(ROOT / "scripts/build_llvm.py"),
-        "--prefix", str(prefix), "--base-prefix", str(stock),
-        "--work-dir", str(temp / "build"), "--source-archive", str(source), "--jobs", "4",
-    )
+    try:
+        run(
+            sys.executable, str(ROOT / "scripts/build_llvm.py"),
+            "--prefix", str(prefix), "--base-prefix", str(stock),
+            "--work-dir", str(temp / "build"), "--source-archive", str(source), "--jobs", "4",
+        )
+    finally:
+        receipt = prefix / LLVM_SDK_MARKER
+        if receipt.is_file():
+            logs = temp.parent / "lyra-ci-logs"
+            logs.mkdir(exist_ok=True)
+            shutil.copyfile(receipt, logs / "sdk-receipt.json")
     if host[0] == "Windows":
         configure_windows_linker(prefix)
     for tool in ("llvm-config", "clang", "clang++", "opt", "llc", "llvm-as", "llvm-dis", "llvm-ar"):

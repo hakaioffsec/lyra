@@ -1,11 +1,68 @@
-"""Filesystem regressions for the Unix SDK overlay."""
+"""Private SDK configuration and filesystem regressions."""
 import os
 from pathlib import Path
 import stat
+import subprocess
 import tempfile
 import unittest
 
-from build_llvm import clone_sdk
+from build_llvm import clone_sdk, replacement_flags, write_msvc_response
+
+
+class SdkConfigurationTests(unittest.TestCase):
+    def test_noble_relwithdebinfo_preserves_abi_rtti_and_eh_flags(self):
+        # LLVM 23.1.6 noble: RelWithDebInfo, assertions OFF, RTTI ON, EH OFF.
+        stock = ["-I/sdk/include", "-std=c++17", "-fno-exceptions",
+                 "-D_GNU_SOURCE", "-D_GLIBCXX_USE_CXX11_ABI=1",
+                 "-D__STDC_CONSTANT_MACROS", "-D__STDC_FORMAT_MACROS",
+                 "-D__STDC_LIMIT_MACROS"]
+        flags = replacement_flags({"build_mode": "RelWithDebInfo", "assertions": "OFF",
+                                   "cxxflags": " ".join(stock)}, False)
+        self.assertEqual(flags[:len(stock)], stock)
+        self.assertIn("-DNDEBUG", flags)
+        self.assertNotIn("-fno-rtti", flags)
+        self.assertNotIn("-fexceptions", flags)
+        self.assertIn("-O2", flags)
+        self.assertIn("-g", flags)
+
+    def test_assertion_mode_controls_ndebug_for_each_optimized_mode(self):
+        for mode in ("Release", "RelWithDebInfo", "MinSizeRel"):
+            for windows in (False, True):
+                for assertions in ("ON", "OFF"):
+                    with self.subTest(mode=mode, windows=windows, assertions=assertions):
+                        flags = replacement_flags({"build_mode": mode, "assertions": assertions,
+                                                   "cxxflags": ""}, windows)
+                        prefix = "/" if windows else "-"
+                        self.assertIn(prefix + ("UNDEBUG" if assertions == "ON" else "DNDEBUG"), flags)
+                        self.assertNotIn(prefix + ("DNDEBUG" if assertions == "ON" else "UNDEBUG"), flags)
+
+    def test_preserves_reported_rtti_and_exception_configuration(self):
+        stock = "-std=c++17 -fno-rtti -fexceptions -D_GLIBCXX_USE_CXX11_ABI=0"
+        flags = replacement_flags({"build_mode": "Release", "assertions": "ON",
+                                   "cxxflags": stock}, False)
+        self.assertEqual(flags[:4], stock.split())
+        self.assertNotIn("-fno-exceptions", flags)
+        self.assertNotIn("-frtti", flags)
+
+    def test_unsupported_configuration_has_actionable_error(self):
+        for mode, assertions in (("Debug", "ON"), ("", "OFF"), ("Release", "UNKNOWN")):
+            with self.subTest(mode=mode, assertions=assertions):
+                with self.assertRaisesRegex(RuntimeError, "omit --base-prefix"):
+                    replacement_flags({"build_mode": mode, "assertions": assertions,
+                                       "cxxflags": ""}, False)
+
+    def test_msvc_response_keeps_linker_arguments_on_driver_line(self):
+        command = [Path("C:/build dir/llc.obj"), "/MT", "/FeC:/build dir/llc.exe",
+                   "/link", "-LIBPATH:C:/private SDK/lib",
+                   Path("C:/private SDK/lib/LLVMCodeGen.lib"), "zs.lib"]
+        with tempfile.TemporaryDirectory() as directory:
+            response = Path(directory) / "link.rsp"
+            write_msvc_response(response, command)
+            text = response.read_text(encoding="utf-8")
+        self.assertEqual(text, subprocess.list2cmdline(list(map(str, command))) + "\n")
+        self.assertEqual(len(text.splitlines()), 1)
+        self.assertIn('/link "-LIBPATH:C:/private SDK/lib"', text)
+        self.assertTrue(text.endswith("zs.lib\n"))
 
 
 @unittest.skipIf(os.name == "nt", "Unix overlay; Windows uses private copies")
