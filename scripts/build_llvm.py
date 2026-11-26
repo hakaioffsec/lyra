@@ -303,14 +303,12 @@ def targeted(base, prefix, work, source, logs, metadata, libraries, codegen):
         raise RuntimeError("Missing native C++ compiler; Windows requires a VS developer shell")
     flags = replacement_flags(private_configuration, os.name == "nt")
     if os.name == "nt":
+        from windows_llvm_sdk import is_release_static_crt
         stock_object = work / ("stock-" + member)
         with stock_object.open("wb") as stream:
             subprocess.run([ar, "p", codegen, source_member], stdout=stream, check=True)
         directives = capture([sdk_tool(base, "llvm-readobj"), "--coff-directives", stock_object])
-        if not re.search(r"(?:DEFAULTLIB:LIBCMT(?:\.lib)?|RuntimeLibrary=MT_StaticRelease)",
-                         directives, re.IGNORECASE) or re.search(
-                             r"(?:DEFAULTLIB:MSVCRT|RuntimeLibrary=MD_|LIBCMTD)", directives,
-                             re.IGNORECASE):
+        if not is_release_static_crt(directives):
             raise RuntimeError("Windows base SDK must use release static MSVC CRT (/MT)")
     objects = []
     commands = []

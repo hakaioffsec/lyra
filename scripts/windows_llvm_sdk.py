@@ -31,7 +31,7 @@ DEPENDENCIES = (
         "url": "https://github.com/facebook/zstd/releases/download/v1.5.7/zstd-1.5.7.tar.gz",
         "sha256": "eb33e51f49a15e023950cd7825ca74a4a2b43db8354825ac24fc1b7ee09e6fa3",
         "library": "zstd_static.lib", "cmake": "build/cmake",
-        "options": ["ZSTD_BUILD_PROGRAMS=ON", "ZSTD_BUILD_TESTS=OFF",
+        "options": ["ZSTD_BUILD_PROGRAMS=OFF", "ZSTD_BUILD_TESTS=OFF",
                     "ZSTD_BUILD_STATIC=ON", "ZSTD_BUILD_SHARED=OFF"],
     },
     {
@@ -92,13 +92,21 @@ def _cmake_value(text, name):
     return values[0].strip().strip('"')
 
 
+def is_release_static_crt(directives):
+    text = directives.replace('"', "")
+    static = re.search(
+        r"(?:DEFAULTLIB:LIBCMT(?:\.lib)?|RuntimeLibrary=MT_StaticRelease)(?=\s|$)",
+        text, re.IGNORECASE)
+    incompatible = re.search(
+        r"DEFAULTLIB:(?:MSVCRTD?|LIBCMTD)(?:\.lib)?(?=\s|$)|RuntimeLibrary=(?:MD_|MTd_)",
+        text, re.IGNORECASE)
+    return static is not None and incompatible is None
+
+
 def _static_crt(base, path, capture, logs):
     directives = capture([base / "bin/llvm-readobj.exe", "--coff-directives", path])
     (logs / (path.name + "-directives.log")).write_text(directives + "\n", encoding="utf-8")
-    if (not re.search(r"(?:DEFAULTLIB:LIBCMT(?:\.lib)?|RuntimeLibrary=MT_StaticRelease)",
-                      directives, re.IGNORECASE)
-            or re.search(r"(?:DEFAULTLIB:MSVCRT|RuntimeLibrary=MD_|LIBCMTD)",
-                         directives, re.IGNORECASE)):
+    if not is_release_static_crt(directives):
         raise RuntimeError(f"Expected release static MSVC CRT (/MT): {path}")
 
 
