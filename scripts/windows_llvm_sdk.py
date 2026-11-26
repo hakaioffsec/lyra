@@ -15,8 +15,8 @@ import tarfile
 import urllib.request
 
 
-# Keep these versions and options in sync with the pinned LLVM source's
-# llvm/utils/release/build_llvm_release.bat, not independently upgraded releases.
+# Versions follow the pinned LLVM source's llvm/utils/release/build_llvm_release.bat.
+# Options select the required static libraries and matching MSVC runtime.
 DEPENDENCIES = (
     {
         "name": "zlib", "version": "1.3.2", "root": "zlib-1.3.2",
@@ -32,7 +32,8 @@ DEPENDENCIES = (
         "sha256": "eb33e51f49a15e023950cd7825ca74a4a2b43db8354825ac24fc1b7ee09e6fa3",
         "library": "zstd_static.lib", "cmake": "build/cmake",
         "options": ["ZSTD_BUILD_PROGRAMS=OFF", "ZSTD_BUILD_TESTS=OFF",
-                    "ZSTD_BUILD_STATIC=ON", "ZSTD_BUILD_SHARED=OFF"],
+                    "ZSTD_BUILD_STATIC=ON", "ZSTD_BUILD_SHARED=OFF",
+                    "ZSTD_USE_STATIC_RUNTIME=ON"],
     },
     {
         "name": "libxml2", "version": "2.9.12", "root": "libxml2-v2.9.12",
