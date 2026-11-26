@@ -338,10 +338,10 @@ def main():
         # Resolving a venv interpreter symlink would lose its environment.
         args.ida_python, args.ida_dir = args.ida_python.absolute(), args.ida_dir.resolve()
     configured = args.llvm_bin or os.environ.get("LYRA_LLVM_BIN")
-    if not configured and os.environ.get("LLVM_SYS_221_PREFIX"):
-        configured = Path(os.environ["LLVM_SYS_221_PREFIX"]) / "bin"
+    if not configured and os.environ.get("LLVM_SYS_231_PREFIX"):
+        configured = Path(os.environ["LLVM_SYS_231_PREFIX"]) / "bin"
     if not configured:
-        parser.error("set --llvm-bin, LYRA_LLVM_BIN, or LLVM_SYS_221_PREFIX")
+        parser.error("set --llvm-bin, LYRA_LLVM_BIN, or LLVM_SYS_231_PREFIX")
     args.output.mkdir(parents=True)
     runner = Runner(args.output, Path(configured).resolve(), args.lyra.resolve())
     inspections = []

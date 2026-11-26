@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Exercise initialization-safe string encryption in real Linux processes.
 
-Requires LLVM 22, Zig and Docker. The fixtures are Linux ABI probes even when
-this command runs on macOS. This does not replace Windows ImageAttach/JVM smoke.
+Requires the patched LLVM 23 SDK, Zig and Docker. The fixtures are Linux ABI
+probes even on macOS; they do not replace native loader checks on other systems.
 """
 import argparse
 import hashlib
@@ -21,7 +21,7 @@ def main():
     parser.add_argument('--llvm-bin', type=Path, default=os.environ.get('LYRA_LLVM_BIN'))
     args = parser.parse_args()
     if args.llvm_bin is None:
-        parser.error('set LYRA_LLVM_BIN or pass --llvm-bin for LLVM 22')
+        parser.error('set LYRA_LLVM_BIN or pass --llvm-bin for the patched LLVM 23 SDK')
     llvm = args.llvm_bin.resolve()
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)

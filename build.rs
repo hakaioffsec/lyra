@@ -23,16 +23,16 @@ fn llvm_config(config: &Path, option: &str) -> String {
 }
 
 fn main() {
-    // llvm-sys declares links="llvm-22". Its metadata pins headers/flags to
+    // llvm-sys declares links="llvm-23". Its metadata pins headers/flags to
     // the library already selected for the Rust bindings, not another PATH LLVM.
-    println!("cargo:rerun-if-env-changed=DEP_LLVM_22_CONFIG_PATH");
-    let config = PathBuf::from(env::var_os("DEP_LLVM_22_CONFIG_PATH").expect(
-        "llvm-sys must export DEP_LLVM_22_CONFIG_PATH; LLVM 22 development files are required",
+    println!("cargo:rerun-if-env-changed=DEP_LLVM_23_CONFIG_PATH");
+    let config = PathBuf::from(env::var_os("DEP_LLVM_23_CONFIG_PATH").expect(
+        "llvm-sys must export DEP_LLVM_23_CONFIG_PATH; LLVM 23 development files are required",
     ));
     let version = llvm_config(&config, "--version");
     assert!(
-        version.starts_with("22."),
-        "outlining requires LLVM 22, got {version}"
+        version.starts_with("23."),
+        "outlining requires LLVM 23, got {version}"
     );
     let include = PathBuf::from(llvm_config(&config, "--includedir"));
     for header in [

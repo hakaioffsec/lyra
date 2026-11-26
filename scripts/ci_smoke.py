@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # Copyright (c) 2026 Hakai Offensive Security.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Build and exercise public samples using native LLVM 22 and the Rust host."""
+"""Build and exercise public samples using the patched LLVM 23 SDK and Rust host."""
 
 import argparse
 import json
@@ -167,7 +167,7 @@ class Runner:
         require(host is not None, "rustc -vV did not report its host target")
         self.target = versions["target"] = host.group(1)
         rust_llvm = re.search(r"^LLVM version: (\d+)\.", rustc, re.MULTILINE)
-        require(rust_llvm is not None and rust_llvm.group(1) == "22", "rustc must emit LLVM 22 IR")
+        require(rust_llvm is not None and rust_llvm.group(1) == "23", "rustc must emit LLVM 23 IR")
         machine = {"arm64": "aarch64", "amd64": "x86_64"}.get(platform.machine().lower(), platform.machine().lower())
         system = {"Linux": "unknown-linux-gnu", "Darwin": "apple-darwin", "Windows": "pc-windows-msvc"}
         require(platform.system() in system and self.target == f"{machine}-{system[platform.system()]}",
@@ -178,7 +178,7 @@ class Runner:
             text, _ = self.run(directory, f"{name}-version", [tool, "--version"], timeout=30, capture=True)
             versions["llvm"][name] = text.decode("utf-8", errors="replace")
             match = re.search(r"(?:LLVM|clang) version (\d+)\.", versions["llvm"][name], re.IGNORECASE)
-            require(match is not None and match.group(1) == "22", f"{tool} must be LLVM 22")
+            require(match is not None and match.group(1) == "23", f"{tool} must be LLVM 23")
         for binary in (self.lyra, self.lyra.with_name("lyra_wrapper" + EXE), self.lyra.with_name("lyra_linker" + EXE)):
             require(binary.is_file(), f"missing native binary: {binary}; build cargo --bins first")
 
@@ -380,8 +380,8 @@ def main():
         parser.error("--output must not be inside a sample source project")
     args.output.mkdir(parents=True)
     configured = args.llvm_bin or os.environ.get("LYRA_LLVM_BIN")
-    if not configured and os.environ.get("LLVM_SYS_221_PREFIX"):
-        configured = Path(os.environ["LLVM_SYS_221_PREFIX"]) / "bin"
+    if not configured and os.environ.get("LLVM_SYS_231_PREFIX"):
+        configured = Path(os.environ["LLVM_SYS_231_PREFIX"]) / "bin"
     llvm_bin = Path(configured).resolve() if configured else args.output / "missing-llvm-bin"
     runner = Runner(args.output, llvm_bin, args.lyra.resolve())
     try:
