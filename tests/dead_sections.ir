@@ -1,0 +1,14 @@
+@selected_storage = global i32 42
+@unselected_storage = global [15 x i8] c"LYRA_DEAD_DATA\00"
+
+define ptr @unused_feature() {
+entry:
+  ret ptr @unselected_storage
+}
+
+define i32 @main() {
+entry:
+  %value = load volatile i32, ptr @selected_storage
+  %result = sub i32 %value, 42
+  ret i32 %result
+}

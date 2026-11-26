@@ -1,0 +1,11 @@
+[package]
+name = "hyphen-app"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+hyphen-lib = { path = "../library" }
+
+[build-dependencies]
+hyphen-lib = { path = "../library" }

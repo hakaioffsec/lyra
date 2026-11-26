@@ -7,27 +7,18 @@
 //
 // Obfuscation passes.
 //
-// Shipped passes:
+// Passes are opt-in; see ROADMAP.md for supported subsets and measured limits.
+// String encryption changes selected globals, block shuffle changes layout,
+// indirect branches/calls change selected control transfers, and MBA rewrites
+// only proven-defined scalar integer expressions.
 //
-//   * `string_encryption` — per-byte random XOR of constant byte arrays
-//     with a global ctor decrypting them in place before `main`. Tested
-//     end-to-end on quasar (9501 strings across quasar bin + quasar lib
-//     + protean, runtime behaviour preserved).
-//   * `shuffle_blocks` — permutes basic-block textual order within each
-//     eligible function. Defeats byte-sequence signatures and BinDiff
-//     block-layout matching per build. Does not change CFG semantics
-//     since LLVM IR uses explicit terminators.
-//
-// The earlier `bogus_control_flow`, `control_flow_flattening`, and
-// `instruction_substitution` passes were deleted because they shipped
-// known-broken behaviour (ad-hoc name blocklists in CFF, shared-global
-// opaque predicates in BCF, unconfigurable templates and miscounted
-// stats in instruction substitution) and had not been regression-tested
-// against the current RUSTC_WRAPPER pipeline or LLVM 22. Their
-// replacements — ranked in ROADMAP.md — are better-designed rewrites
-// rather than incremental fixes.
+// The old BCF, CFF and instruction-substitution implementations were removed for
+// correctness reasons; they are not dependencies of the current pipeline.
 
+pub mod block_outline;
+mod coverage;
 pub mod indirect_branch;
+pub mod indirect_call;
 pub mod mba;
 pub mod seed;
 pub mod shuffle_blocks;
@@ -49,6 +40,11 @@ impl<'ctx> Obfuscator<'ctx> {
         Ok(())
     }
 
+    pub fn apply_block_outline(&mut self) -> Result<()> {
+        block_outline::apply(self.context, &mut self.module)?;
+        Ok(())
+    }
+
     pub fn apply_shuffle_blocks(&mut self) -> Result<()> {
         shuffle_blocks::apply(self.context, &mut self.module)?;
         Ok(())
@@ -56,6 +52,11 @@ impl<'ctx> Obfuscator<'ctx> {
 
     pub fn apply_indirect_branch(&mut self) -> Result<()> {
         indirect_branch::apply(self.context, &mut self.module)?;
+        Ok(())
+    }
+
+    pub fn apply_indirect_call(&mut self) -> Result<()> {
+        indirect_call::apply(self.context, &mut self.module)?;
         Ok(())
     }
 

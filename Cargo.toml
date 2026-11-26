@@ -49,3 +49,10 @@ inkwell = { version = "0.9", default-features = false, features = [
 either = "1.13"
 llvm-sys = "221"
 cc = "1"
+
+[build-dependencies]
+cc = "1"
+shlex = "1.3"
+
+[workspace]
+exclude = ["test_project", "test_dll_project", "test_workspace_project"]

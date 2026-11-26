@@ -1,0 +1,28 @@
+; Copyright (c) 2026 Hakai Offensive Security.
+; SPDX-License-Identifier: GPL-3.0-or-later
+; Expand __LONG_LABEL__ to a 1024-byte name. Its .1 successor must stay distinct.
+define i32 @choose(i32 noundef %value) {
+entry:
+  %take_first = icmp ne i32 %value, 0
+  br i1 %take_first, label %__LONG_LABEL__, label %__LONG_LABEL__.1
+__LONG_LABEL__:
+  %first = add i32 %value, 11
+  br label %exit
+__LONG_LABEL__.1:
+  %second = add i32 %value, 22
+  br label %exit
+exit:
+  %result = phi i32 [ %first, %__LONG_LABEL__ ], [ %second, %__LONG_LABEL__.1 ]
+  ret i32 %result
+}
+
+define i32 @main() {
+entry:
+  %first = call i32 @choose(i32 1)
+  %second = call i32 @choose(i32 0)
+  %first_ok = icmp eq i32 %first, 12
+  %second_ok = icmp eq i32 %second, 22
+  %both_ok = and i1 %first_ok, %second_ok
+  %status = select i1 %both_ok, i32 0, i32 1
+  ret i32 %status
+}

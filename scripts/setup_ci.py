@@ -189,6 +189,13 @@ def install_windows(temp: Path) -> Path:
         if not any((path / library).is_file() for path in search_paths):
             raise RuntimeError(f"LLVM system dependency missing from archive and MSVC SDK: {library}")
     export("LIB", os.pathsep.join(str(path) for path in search_paths))
+    # LLVM's official MSVC archive uses /MT. Rust must use that CRT too.
+    # With crt-static, llvm-sys bundles system import libraries into its rlib;
+    # rustc needs explicit native search paths, not only the linker's LIB.
+    # Encoded flags keep SDK paths containing spaces as single arguments.
+    rustflags = ["-C", "target-feature=+crt-static"]
+    rustflags.extend(f"-Lnative={path}" for path in search_paths)
+    export("CARGO_ENCODED_RUSTFLAGS", "\x1f".join(rustflags))
     return prefix
 
 
@@ -209,8 +216,9 @@ def main() -> None:
     for tool in ("llvm-config", "clang", "clang++", "opt", "llc", "llvm-as", "llvm-dis", "llvm-ar"):
         if not (prefix / "bin" / (tool + suffix)).is_file():
             raise RuntimeError(f"LLVM development tool missing: {tool}")
-    if not (prefix / "include/llvm-c/Core.h").is_file():
-        raise RuntimeError("LLVM development headers missing")
+    for header in ("llvm-c/Core.h", "llvm/Transforms/Utils/CodeExtractor.h", "llvm/Config/abi-breaking.h"):
+        if not (prefix / "include" / header).is_file():
+            raise RuntimeError(f"LLVM development header missing: {header}")
     version = run(str(prefix / "bin" / ("llvm-config" + suffix)), "--version", capture=True)
     if version.split(".")[0] != LLVM_MAJOR:
         raise RuntimeError(f"Expected LLVM {LLVM_MAJOR}, got {version}")

@@ -223,6 +223,7 @@ dependencies = [
  "inkwell",
  "llvm-sys",
  "rand",
+ "shlex",
 ]
 
 [[package]]

@@ -7,19 +7,18 @@
 //
 // Per-build seed management.
 //
-// Every pass that uses randomness goes through `PassRng::for_pass(...)`.
+// Every pass that uses randomness goes through `seed::for_pass(...)`.
 // Behaviour:
 //
 //   * If the `LYRA_SEED` env var is set to a valid u64, each pass derives
 //     its RNG seed deterministically from `(LYRA_SEED, pass_name,
-//     module_name, module_source)` via FNV-1a 64. Re-running the build
-//     with the same seed on the same inputs reproduces the same binary.
-//     Useful for CI diffs and bisecting pass-introduced regressions.
+//     module_name, module_source)` via FNV-1a 64. This fixes the RNG stream
+//     for pinned inputs and dependencies; final artifact reproducibility
+//     still requires separate pipeline/toolchain verification.
 //
 //   * If `LYRA_SEED` is unset, each pass pulls entropy from the OS via
-//     `rand::rng()`. Two consecutive builds produce different binaries
-//     even from identical source, which is the signature-breaking mode
-//     we want by default.
+//     `rand::rng()`. Fresh entropy does not guarantee different artifacts:
+//     eligibility, selected variants and backend folding can leave bytes equal.
 //
 // The CLI flag `--seed <u64>` sets `LYRA_SEED` on the cargo invocation;
 // the wrapper inherits it, and `lyra __obfuscate-ir` subprocesses read

@@ -1,0 +1,11 @@
+target triple = "x86_64-pc-windows-gnu"
+
+@public_value = constant i64 7, align 8
+@"\01__imp_public_value" = global ptr @public_value
+
+define i64 @probe(i64 %value) {
+entry:
+  %offset = load volatile i64, ptr @public_value, align 8
+  %result = add i64 %value, %offset
+  ret i64 %result
+}

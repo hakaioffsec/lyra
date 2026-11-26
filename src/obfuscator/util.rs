@@ -21,6 +21,30 @@
 use inkwell::module::Module;
 use inkwell::values::{AsValueRef, FunctionValue, InstructionOpcode};
 
+/// Native execution fixtures need the host ABI and symbol mangling, not only
+/// a pointer width. In particular, Mach-O JIT symbols require its `m:o` layout.
+/// Deliberately non-native layout tests must not call this helper.
+#[cfg(test)]
+pub(crate) fn set_native_test_target(module: &Module) {
+    use inkwell::targets::{CodeModel, InitializationConfig, RelocMode, Target, TargetMachine};
+    use inkwell::OptimizationLevel;
+    Target::initialize_native(&InitializationConfig::default()).expect("native LLVM target");
+    let triple = TargetMachine::get_default_triple();
+    let machine = Target::from_triple(&triple)
+        .expect("native target triple")
+        .create_target_machine(
+            &triple,
+            "generic",
+            "",
+            OptimizationLevel::None,
+            RelocMode::Default,
+            CodeModel::Default,
+        )
+        .expect("native target machine");
+    module.set_triple(&triple);
+    module.set_data_layout(&machine.get_target_data().get_data_layout());
+}
+
 /// Returns true if the function should be left alone entirely by a pass
 /// that alters control flow or instruction selection.
 ///

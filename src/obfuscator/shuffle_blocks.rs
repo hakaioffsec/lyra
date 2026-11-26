@@ -5,7 +5,7 @@
 // Free Software Foundation, either version 3 or (at your option) any later
 // version. See LICENSE and the generated-output permission in LICENSE-EXCEPTION.md.
 //
-// Shuffle Blocks pass — ROADMAP Sprint 1 / A2.
+// Shuffle Blocks pass (A2).
 //
 // What it does
 // ------------
@@ -22,13 +22,9 @@
 // in machine code. PHI-node operands are block-identity-based, not
 // position-based, so reordering doesn't touch them.
 //
-// What the analyst sees
-// ---------------------
-// Byte-for-byte different binaries per build. YARA signatures, function
-// hashes, or BinDiff-style matching that rely on block layout break
-// immediately. IDA graph view still shows a correct CFG but each build's
-// layout is different, so notes / scripts keyed on addresses become
-// unstable across rebuilds.
+// Final-code effects depend on LLVM's backend layout decisions. A textual
+// permutation is not a guarantee of different bytes or failed function matching;
+// measure the linked artifacts rather than inferring protection from moved blocks.
 
 use anyhow::Result;
 use inkwell::basic_block::BasicBlock;
@@ -38,6 +34,7 @@ use inkwell::values::FunctionValue;
 use rand::seq::SliceRandom;
 use rand::Rng;
 
+use crate::obfuscator::coverage::{self, Counts};
 use crate::obfuscator::seed;
 use crate::obfuscator::util::should_skip_function;
 
@@ -56,14 +53,37 @@ pub fn apply<'ctx>(_context: &'ctx Context, module: &mut Module<'ctx>) -> Result
     );
     let mut total_functions = 0usize;
     let mut total_blocks_moved = 0usize;
+    let mut counts = coverage::enabled().then(Counts::default);
 
     let functions: Vec<FunctionValue<'ctx>> = module.get_functions().collect();
     for function in functions {
+        if let Some(counts) = counts.as_mut() {
+            if function.count_basic_blocks() != 0 {
+                counts.considered += 1;
+            }
+        }
         if should_skip_function(&function) {
+            if let Some(counts) = counts.as_mut() {
+                if function.count_basic_blocks() != 0 {
+                    counts.skip("function_exclusion", 1);
+                }
+            }
             continue;
         }
 
         let moved = shuffle_function_blocks(&function, &mut rng);
+        if let Some(counts) = counts.as_mut() {
+            if function.count_basic_blocks() < MIN_BLOCKS as u32 {
+                counts.skip("fewer_than_three_blocks", 1);
+            } else {
+                counts.eligible += 1;
+                if moved == 0 {
+                    counts.skip("identity_permutation", 1);
+                } else {
+                    counts.transformed += 1;
+                }
+            }
+        }
         if moved > 0 {
             total_functions += 1;
             total_blocks_moved += moved;
@@ -74,6 +94,14 @@ pub fn apply<'ctx>(_context: &'ctx Context, module: &mut Module<'ctx>) -> Result
         "        ✓ Shuffled {} block(s) across {} function(s)",
         total_blocks_moved, total_functions
     );
+    if let Some(counts) = counts {
+        counts.emit(
+            "shuffle-blocks",
+            "functions_with_bodies",
+            module.get_name().to_str().unwrap_or("module"),
+            "",
+        );
+    }
     Ok(())
 }
 

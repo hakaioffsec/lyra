@@ -20,8 +20,8 @@ use std::process::Command;
 /// `bin` and `cdylib`/`dylib` go through the **linker** (rustc emits
 /// `.o` objects and then invokes `link.exe`/`ld`/`ld64` to produce an
 /// `.exe` / `.dll` / `.so` / `.dylib`). Both are routed through the
-/// two-phase "Phase A emit IR → obfuscate → Phase B link with shim"
-/// path in `lyra_wrapper.rs`.
+/// single-rustc path in `lyra_wrapper.rs`: emit IR, then transform
+/// and substitute its object at the linker boundary.
 ///
 /// `staticlib` produces a `.lib` / `.a` archive directly (no link
 /// step). Its main `.o` lives inside that archive and is patched the
@@ -36,8 +36,8 @@ enum CrateKind {
     /// Rust-native dynamic library (same file extension as cdylib
     /// but exports Rust ABI; rarely used outside rustc itself).
     Dylib,
-    /// Static library archive (`.lib` / `.a`). Obfuscation patches
-    /// the main `.o` inside the archive, same as an rlib.
+    /// Static library archive (`.lib` / `.a`). The current wrapper passes
+    /// this crate type through without obfuscating its archive.
     Staticlib,
 }
 
@@ -68,7 +68,7 @@ impl CrateKind {
 #[command(
     name = "lyra",
     about = "LLVM-based code obfuscator for Rust",
-    long_about = "Lyra obfuscates Rust binaries at the LLVM IR level, making them resistant to reverse engineering."
+    long_about = "Lyra applies opt-in LLVM IR obfuscation to selected Rust crates. Coverage, runtime cost, and analysis resistance depend on the pass and workload."
 )]
 struct Args {
     /// Path to the Rust project directory to obfuscate
@@ -101,28 +101,36 @@ struct Args {
     lib: bool,
 
     /// Enable string encryption (per-byte random XOR + global-ctor
-    /// decrypt stub). Currently the only shipped obfuscation pass.
+    /// decrypt stub).
     #[arg(long = "string-enc")]
     string_enc: bool,
 
+    /// Outline at most one eligible acyclic block per function into an internal
+    /// noinline helper. Calls/live values add cost; unsupported regions stay intact.
+    #[arg(long = "block-outline")]
+    block_outline: bool,
+
     /// Enable basic-block shuffling. Permutes textual block order within
-    /// each function (entry block stays first). Breaks byte-level
-    /// signatures and block-layout-based BinDiff matching; no effect on
-    /// CFG semantics.
+    /// each eligible function (entry block stays first). Final layout effects
+    /// depend on LLVM's backend; CFG semantics are unchanged.
     #[arg(long = "shuffle-blocks")]
     shuffle_blocks: bool,
 
     /// Enable indirect-branch obfuscation. Rewrites direct `br` terminators
-    /// to go through a per-function block-address dispatch table, so the
-    /// real destination is only known at runtime. Breaks CFG reconstruction
-    /// in decompilers.
+    /// through per-function block-address dispatch tables. Switch is unchanged.
+    /// Analysis impact depends on the workload, tool, and settings.
     #[arg(long = "indirect-branch")]
     indirect_branch: bool,
 
-    /// Enable Mixed Boolean-Arithmetic substitution. Replaces integer
-    /// add/sub/xor/and/or and float fadd/fsub/fmul with equivalent MBA
-    /// expressions (2 rounds). Combined with --indirect-branch, makes
-    /// dispatch-table index computation opaque to decompilers.
+    /// Route eligible calls to defined private/internal functions through
+    /// encoded function-pointer entries. Unsupported ABI shapes are unchanged.
+    /// Call targets remain recoverable through analysis or execution.
+    #[arg(long = "indirect-call")]
+    indirect_call: bool,
+
+    /// Enable Mixed Boolean-Arithmetic substitution for scalar integer
+    /// add/sub/xor/and/or with proven-defined operands (2 rounds).
+    /// Uncertain operands and floating-point arithmetic are left unchanged.
     #[arg(long = "mba")]
     mba: bool,
 
@@ -136,10 +144,10 @@ struct Args {
     #[arg(long, value_name = "NAME")]
     bin: Option<String>,
 
-    /// Obfuscate the named crate in addition to the bin. May be passed
-    /// multiple times. Lib-style crates have their rlib patched in place;
-    /// the bin/cdylib target is handled via a linker shim.
-    /// Example: --obfuscate-crate quasar --obfuscate-crate protean
+    /// Select Rust crates to obfuscate (repeatable; hyphens normalize to underscores).
+    /// Defaults to the bin/cdylib target when omitted; an explicit list replaces
+    /// that default. Lib-style crates have their rlib patched in place; the
+    /// bin/cdylib target is handled via a linker shim.
     #[arg(long = "obfuscate-crate", value_name = "CRATE")]
     obfuscate_crate: Vec<String>,
 
@@ -150,11 +158,9 @@ struct Args {
     verbose_link: bool,
 
     /// Master RNG seed for all randomised passes. If set, every pass
-    /// derives its per-module RNG deterministically from this seed, so
-    /// the same seed + same source produces the same binary. Without
-    /// this flag, every build uses fresh OS entropy and two consecutive
-    /// builds of the same source produce different binaries (the
-    /// signature-breaking default).
+    /// derives its RNG deterministically from the seed and module inputs.
+    /// Without this flag, passes use fresh OS entropy. Neither setting
+    /// guarantees artifact uniqueness on every build.
     #[arg(long, value_name = "U64")]
     seed: Option<u64>,
 }
@@ -218,18 +224,24 @@ fn main() -> Result<()> {
     if args.string_enc {
         passes.push("String Encryption");
     }
+    if args.block_outline {
+        passes.push("Block Outlining");
+    }
     if args.shuffle_blocks {
         passes.push("Shuffle Blocks");
     }
     if args.indirect_branch {
         passes.push("Indirect Branch");
     }
+    if args.indirect_call {
+        passes.push("Indirect Call");
+    }
     if args.mba {
         passes.push("MBA");
     }
     if passes.is_empty() {
         println!(
-            "[*] Passes : none (use --string-enc, --shuffle-blocks, --indirect-branch, --mba)"
+            "[*] Passes : none (use --string-enc, --block-outline, --shuffle-blocks, --indirect-branch, --indirect-call, --mba)"
         );
     } else {
         println!("[*] Passes : {}", passes.join(", "));
@@ -264,7 +276,7 @@ fn main() -> Result<()> {
 //      - LYRA_OBFUSCATE_CRATES = comma-separated crate names
 //      - LYRA_OBF_DIR          = temp dir for obfuscated artefacts
 //      - LYRA_LYRA_EXE         = this executable (for `lyra __obfuscate-ir`)
-//      - LYRA_LLC / LYRA_CLANG / LYRA_LLVM_AR = absolute paths to tools
+//      - LYRA_LLC / LYRA_LLVM_AR = absolute paths to tools
 //      - LYRA_LINKER_SHIM / LYRA_REAL_LINKER  = linker-shim wiring
 //      - LYRA_TARGET / LYRA_OBFUSCATE_FLAGS   = pass-through config
 //      - CARGO_PROFILE_RELEASE_LTO=off        = force-disable LTO so rlibs
@@ -277,11 +289,10 @@ fn main() -> Result<()> {
 //        it to a .o, then patches the freshly-produced rlib in place using
 //        llvm-ar (swapping the main codegen-unit .o with the obfuscated
 //        one).
-//      - BIN crate: Phase A emits IR without linking; Phase B re-runs
-//        rustc with `-C linker=<lyra_linker.exe>`. The linker shim
-//        intercepts the MSVC linker invocation (including @response
-//        files), substitutes the bin's .rcgu.o with the obfuscated .o
-//        while preserving the allocator shim, then invokes link.exe.
+//      - BIN/shared-library crate: rustc emits IR and links in one invocation
+//        through `lyra_linker`. At the link boundary the wrapper callback
+//        transforms the emitted IR; the shim substitutes its object while
+//        preserving the allocator shim and the original linker driver.
 //
 // 3. Copy the cargo-produced executable to --output.
 // ===========================================================================
@@ -309,12 +320,17 @@ fn run_native_flow(args: &Args, temp_dir: &Path) -> Result<()> {
         }
     };
 
-    // Which crates to obfuscate. If the user didn't pass --obfuscate-crate,
-    // default to obfuscating just the main target crate.
-    let mut crates_to_obfuscate: Vec<String> = args.obfuscate_crate.clone();
+    // Cargo target names may contain hyphens; rustc crate names use underscores.
+    // Keep the Cargo name for target selection and artifact paths.
+    let target_crate = target_name.replace('-', "_");
+    let mut crates_to_obfuscate: Vec<String> = args
+        .obfuscate_crate
+        .iter()
+        .map(|name| name.replace('-', "_"))
+        .collect();
     if crates_to_obfuscate.is_empty() {
-        crates_to_obfuscate.push(target_name.clone());
-    } else if !crates_to_obfuscate.contains(&target_name) {
+        crates_to_obfuscate.push(target_crate);
+    } else if !crates_to_obfuscate.contains(&target_crate) {
         eprintln!(
             "[lyra] note: --obfuscate-crate list does not include target '{}'. \
              Lib crates will be obfuscated inside their rlibs, but the main \
@@ -340,11 +356,9 @@ fn run_native_flow(args: &Args, temp_dir: &Path) -> Result<()> {
         "Could not locate llvm-project/build/bin. Expected alongside or two dirs above the lyra binary.",
     )?;
     let llc = llvm_bin.join(exe_name("llc"));
-    let clang = llvm_bin.join(exe_name("clang"));
     let llvm_ar = llvm_bin.join(exe_name("llvm-ar"));
 
     let llc_abs = absolutize(&llc)?;
-    let clang_abs = absolutize(&clang)?;
     let llvm_ar_abs = absolutize(&llvm_ar)?;
 
     let obf_dir = temp_dir.join("obf");
@@ -359,11 +373,17 @@ fn run_native_flow(args: &Args, temp_dir: &Path) -> Result<()> {
     if args.string_enc {
         obf_flags.push("--string-enc");
     }
+    if args.block_outline {
+        obf_flags.push("--block-outline");
+    }
     if args.shuffle_blocks {
         obf_flags.push("--shuffle-blocks");
     }
     if args.indirect_branch {
         obf_flags.push("--indirect-branch");
+    }
+    if args.indirect_call {
+        obf_flags.push("--indirect-call");
     }
     if args.mba {
         obf_flags.push("--mba");
@@ -391,7 +411,6 @@ fn run_native_flow(args: &Args, temp_dir: &Path) -> Result<()> {
     cmd.env("LYRA_OBF_DIR", &obf_dir);
     cmd.env("LYRA_LYRA_EXE", &lyra_exe);
     cmd.env("LYRA_LLC", &llc_abs);
-    cmd.env("LYRA_CLANG", &clang_abs);
     cmd.env("LYRA_LLVM_AR", &llvm_ar_abs);
     cmd.env("LYRA_TARGET", target);
     cmd.env("LYRA_OBFUSCATE_FLAGS", obf_flags.join(" "));
@@ -529,7 +548,7 @@ fn absolutize(p: &Path) -> Result<PathBuf> {
     }
 }
 
-/// Locate the LLVM bin directory containing `llc`, `clang`, and `llvm-ar`.
+/// Locate the LLVM bin directory containing `llc` and `llvm-ar`.
 ///
 /// Resolution order (first match wins):
 ///   1. `$LYRA_LLVM_BIN` env var (explicit override)
@@ -864,8 +883,10 @@ fn find_self_bin(name: &str) -> Result<PathBuf> {
 #[derive(Clone, Copy, Default)]
 struct ObfuscateFlags {
     string_enc: bool,
+    block_outline: bool,
     shuffle_blocks: bool,
     indirect_branch: bool,
+    indirect_call: bool,
     mba: bool,
 }
 
@@ -908,6 +929,11 @@ fn obfuscate_ir_file(input_path: &Path, output_path: &Path, flags: ObfuscateFlag
             .apply_string_encryption()
             .context("String encryption failed")?;
     }
+    if flags.block_outline {
+        obfuscator
+            .apply_block_outline()
+            .context("Block outlining failed")?;
+    }
     if flags.shuffle_blocks {
         obfuscator
             .apply_shuffle_blocks()
@@ -917,6 +943,11 @@ fn obfuscate_ir_file(input_path: &Path, output_path: &Path, flags: ObfuscateFlag
         obfuscator
             .apply_indirect_branch()
             .context("Indirect branch failed")?;
+    }
+    if flags.indirect_call {
+        obfuscator
+            .apply_indirect_call()
+            .context("Indirect call failed")?;
     }
     if flags.mba {
         obfuscator.apply_mba().context("MBA failed")?;
@@ -930,7 +961,7 @@ fn obfuscate_ir_file(input_path: &Path, output_path: &Path, flags: ObfuscateFlag
 }
 
 /// Internal entry point invoked by `lyra_wrapper`:
-///   lyra __obfuscate-ir <in.ll> <out.ll> [--string-enc] [--shuffle-blocks] [--indirect-branch]
+///   lyra __obfuscate-ir <in.ll> <out.ll> [FLAGS]
 fn run_internal_obfuscate(args: &[String]) -> Result<()> {
     if args.len() < 2 {
         anyhow::bail!("usage: lyra __obfuscate-ir <in.ll> <out.ll> [FLAGS]");
@@ -944,8 +975,10 @@ fn run_internal_obfuscate(args: &[String]) -> Result<()> {
     while i < args.len() {
         match args[i].as_str() {
             "--string-enc" => flags.string_enc = true,
+            "--block-outline" => flags.block_outline = true,
             "--shuffle-blocks" => flags.shuffle_blocks = true,
             "--indirect-branch" => flags.indirect_branch = true,
+            "--indirect-call" => flags.indirect_call = true,
             "--mba" => flags.mba = true,
             other => anyhow::bail!("unknown flag '{other}' in __obfuscate-ir"),
         }
@@ -953,13 +986,29 @@ fn run_internal_obfuscate(args: &[String]) -> Result<()> {
     }
 
     eprintln!(
-        "[lyra __obfuscate-ir] {} -> {} (string_enc={}, shuffle_blocks={}, indirect_branch={}, mba={})",
+        "[lyra __obfuscate-ir] {} -> {} (string_enc={}, block_outline={}, shuffle_blocks={}, indirect_branch={}, indirect_call={}, mba={})",
         input.display(),
         output.display(),
         flags.string_enc,
+        flags.block_outline,
         flags.shuffle_blocks,
         flags.indirect_branch,
+        flags.indirect_call,
         flags.mba,
     );
+    // This single-use CLI entry point configures LLVM before creating modules.
+    // Rust can emit local names beyond LLVM's default 1024-byte limit; truncating
+    // a cloned block's suffix can merge distinct blocks while parsing text IR.
+    let llvm_args = [
+        c"lyra".as_ptr(),
+        c"--non-global-value-max-name-size=-1".as_ptr(),
+    ];
+    unsafe {
+        inkwell::llvm_sys::support::LLVMParseCommandLineOptions(
+            llvm_args.len() as i32,
+            llvm_args.as_ptr(),
+            std::ptr::null(),
+        );
+    }
     obfuscate_ir_file(&input, &output, flags)
 }

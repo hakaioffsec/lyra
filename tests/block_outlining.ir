@@ -1,0 +1,298 @@
+; Copyright (c) 2025 Hakai Offensive Security.
+; SPDX-License-Identifier: GPL-3.0-or-later
+; Self-checking: main returns zero only for the explicit values below.
+; Exactly four helpers: phi_memory, wide, floating, recursive.
+; All native CI hosts use integral 64-bit pointers. Supplying the layout also
+; makes indirect-call composition exercise the generated helper calls.
+target datalayout = "e-p:64:64-i64:64-n8:16:32:64-S128"
+
+@cell = internal global i32 0, align 4
+
+define i64 @phi_memory(i32 %seed, i32 %mode, i1 %side, ptr %p) noinline {
+entry:
+  switch i32 %mode, label %bypass [ i32 0, label %a
+                                    i32 1, label %b ]
+a:
+  br label %work
+b:
+  br label %work
+work:
+  %x = phi i32 [ %seed, %a ], [ 7, %b ]
+  %old = load volatile i32, ptr %p, align 4
+  %sum = add i32 %old, %x
+  %mix = xor i32 %sum, 85
+  store volatile i32 %mix, ptr %p, align 4
+  %prior = atomicrmw add ptr %p, i32 3 seq_cst, align 4
+  %mask = and i32 %prior, 255
+  %wide = zext i32 %mask to i64
+  %tag = add i64 %wide, 11
+  br i1 %side, label %left, label %right
+bypass:
+  br i1 %side, label %left, label %right
+left:
+  %l = phi i64 [ %tag, %work ], [ -111, %bypass ]
+  ret i64 %l
+right:
+  %r = phi i32 [ %sum, %work ], [ -222, %bypass ]
+  %s = sext i32 %r to i64
+  ret i64 %s
+}
+
+define i64 @wide(i8 signext %a, i16 zeroext %b, i128 %w) noinline {
+entry:
+  br label %work
+work:
+  %aa = sext i8 %a to i128
+  %bb = zext i16 %b to i128
+  %sum = add i128 %w, %aa
+  %mixed = sub i128 %sum, %bb
+  %upper = lshr i128 %mixed, 64
+  %lo = trunc i128 %mixed to i64
+  %hi = trunc i128 %upper to i64
+  %r = xor i64 %lo, %hi
+  br label %done
+done:
+  ret i64 %r
+}
+
+define double @floating(float %a, double %b) noinline {
+entry:
+  br label %work
+work:
+  %aa = fpext float %a to double
+  %twice = fmul double %aa, 2.0
+  %sum = fadd double %twice, %b
+  %sub = fsub double %sum, 3.0
+  %half = fdiv double %sub, 2.0
+  %offset = fadd double %half, 4.0
+  %scale = fmul double %offset, 0.5
+  %r = fsub double %scale, 1.0
+  br label %done
+done:
+  ret double %r
+}
+
+define i64 @recursive(i64 %n) noinline {
+entry:
+  %zero = icmp eq i64 %n, 0
+  br i1 %zero, label %base, label %recurse
+base:
+  ret i64 0
+recurse:
+  %prev = sub i64 %n, 1
+  %nested = call i64 @recursive(i64 %prev)
+  br label %work
+work:
+  %a = add i64 %n, 1
+  %b = add i64 %a, 2
+  %c = add i64 %b, 3
+  %d = add i64 %c, 4
+  %e = add i64 %d, 5
+  %f = add i64 %e, 6
+  %g = add i64 %f, 7
+  %r = add i64 %g, %nested
+  br label %done
+done:
+  ret i64 %r
+}
+
+define i32 @natural_loop(i32 %n) noinline {
+entry:
+  br label %loop
+loop:
+  %i = phi i32 [ %n, %entry ], [ %next, %loop ]
+  %a = add i32 %i, 1
+  %b = mul i32 %a, 3
+  %c = xor i32 %b, 7
+  %d = add i32 %c, 5
+  %e = xor i32 %d, 11
+  %f = sub i32 %e, 2
+  %next = sub i32 %i, 1
+  %more = icmp sgt i32 %next, 0
+  br i1 %more, label %loop, label %done
+done:
+  ret i32 %f
+}
+
+; The a/b SCC has two external entries; natural-loop membership is insufficient.
+define i32 @irreducible(i1 %side, i32 %n) noinline {
+entry:
+  br i1 %side, label %a, label %b
+a:
+  %x = phi i32 [ %n, %entry ], [ %yn, %b ]
+  %a1 = add i32 %x, 1
+  %a2 = mul i32 %a1, 3
+  %a3 = xor i32 %a2, 7
+  %a4 = add i32 %a3, 5
+  %a5 = xor i32 %a4, 11
+  %a6 = sub i32 %a5, 2
+  %xn = sub i32 %x, 1
+  %ac = icmp sgt i32 %xn, 0
+  br i1 %ac, label %b, label %done
+b:
+  %y = phi i32 [ %n, %entry ], [ %xn, %a ]
+  %b1 = add i32 %y, 1
+  %b2 = mul i32 %b1, 3
+  %b3 = xor i32 %b2, 7
+  %b4 = add i32 %b3, 5
+  %b5 = xor i32 %b4, 11
+  %b6 = sub i32 %b5, 2
+  %yn = sub i32 %y, 1
+  %bc = icmp sgt i32 %yn, 0
+  br i1 %bc, label %a, label %done
+done:
+  %r = phi i32 [ %a6, %a ], [ %b6, %b ]
+  ret i32 %r
+}
+
+define i32 @alloca_region(i32 %x) noinline {
+entry:
+  br label %work
+work:
+  %p = alloca i32, align 4
+  store volatile i32 %x, ptr %p, align 4
+  %v = load volatile i32, ptr %p, align 4
+  %a = add i32 %v, 1
+  %b = add i32 %a, 2
+  %c = add i32 %b, 3
+  %d = add i32 %c, 4
+  %e = add i32 %d, 5
+  br label %done
+done:
+  ret i32 %e
+}
+
+declare ptr @llvm.stacksave.p0()
+declare void @llvm.stackrestore.p0(ptr)
+define i32 @stack_sensitive(i32 %x) noinline {
+entry:
+  %saved = call ptr @llvm.stacksave.p0()
+  br label %work
+work:
+  %a = add i32 %x, 1
+  %b = add i32 %a, 2
+  %c = add i32 %b, 3
+  %d = add i32 %c, 4
+  %e = add i32 %d, 5
+  %f = add i32 %e, 6
+  %g = add i32 %f, 7
+  %r = add i32 %g, 8
+  br label %done
+done:
+  call void @llvm.stackrestore.p0(ptr %saved)
+  ret i32 %r
+}
+
+define i32 @tail_leaf(i32 %x) {
+  ret i32 %x
+}
+define i32 @musttail_function(i32 %x) noinline {
+entry:
+  br label %work
+work:
+  %a = add i32 %x, 1
+  %b = add i32 %a, 2
+  %c = add i32 %b, 3
+  %d = add i32 %c, 4
+  %e = add i32 %d, 5
+  %f = add i32 %e, 6
+  %g = add i32 %f, 7
+  %r = add i32 %g, 8
+  br label %done
+done:
+  %v = musttail call i32 @tail_leaf(i32 %r)
+  ret i32 %v
+}
+
+; Keep an EH pad to test exclusion, without depending on an Itanium unwinder.
+; The leaf cannot throw; an unexpected exceptional path must fail main's oracle.
+define i32 @personality(...) {
+  ret i32 0
+}
+define i32 @eh_function(i32 %x) noinline personality ptr @personality {
+entry:
+  %v = invoke i32 @tail_leaf(i32 %x) to label %work unwind label %landing
+work:
+  %a = add i32 %v, 1
+  %b = add i32 %a, 2
+  %c = add i32 %b, 3
+  %d = add i32 %c, 4
+  %e = add i32 %d, 5
+  %f = add i32 %e, 6
+  %g = add i32 %f, 7
+  %r = add i32 %g, 8
+  br label %done
+done:
+  ret i32 %r
+landing:
+  %exception = landingpad { ptr, i32 } cleanup
+  ret i32 -1
+}
+
+define i32 @main() {
+entry:
+  store i32 10, ptr @cell, align 4
+  %p0 = call i64 @phi_memory(i32 -3, i32 0, i1 true, ptr @cell)
+  %m0 = load i32, ptr @cell, align 4
+  %c0 = icmp eq i64 %p0, 93
+  %c1 = icmp eq i32 %m0, 85
+  store i32 -10, ptr @cell, align 4
+  %p1 = call i64 @phi_memory(i32 999, i32 1, i1 false, ptr @cell)
+  %m1 = load i32, ptr @cell, align 4
+  %c2 = icmp eq i64 %p1, -3
+  %c3 = icmp eq i32 %m1, -85
+  %p2 = call i64 @phi_memory(i32 0, i32 2, i1 true, ptr @cell)
+  %p3 = call i64 @phi_memory(i32 0, i32 2, i1 false, ptr @cell)
+  %m2 = load i32, ptr @cell, align 4
+  %c4 = icmp eq i64 %p2, -111
+  %c5 = icmp eq i64 %p3, -222
+  %c6 = icmp eq i32 %m2, -85
+  %w0 = call i64 @wide(i8 -128, i16 65535, i128 18446744073709551616)
+  %w1 = call i64 @wide(i8 127, i16 0, i128 -1)
+  %c7 = icmp eq i64 %w0, -65663
+  %c8 = icmp eq i64 %w1, 126
+  %f0 = call double @floating(float -8.0, double 4.5)
+  %f1 = call double @floating(float 0.0, double -1.0)
+  %c9 = fcmp oeq double %f0, -2.625
+  %c10 = fcmp oeq double %f1, 0.0
+  %r0 = call i64 @recursive(i64 4)
+  %r1 = call i64 @recursive(i64 0)
+  %c11 = icmp eq i64 %r0, 122
+  %c12 = icmp eq i64 %r1, 0
+  %n = call i32 @natural_loop(i32 5)
+  %i0 = call i32 @irreducible(i1 true, i32 4)
+  %i1 = call i32 @irreducible(i1 false, i32 5)
+  %c13 = icmp eq i32 %n, 11
+  %c14 = icmp eq i32 %i0, 11
+  %c15 = icmp eq i32 %i1, 11
+  %a = call i32 @alloca_region(i32 27)
+  %s = call i32 @stack_sensitive(i32 6)
+  %t = call i32 @musttail_function(i32 6)
+  %h = call i32 @eh_function(i32 6)
+  %c16 = icmp eq i32 %a, 42
+  %c17 = icmp eq i32 %s, 42
+  %c18 = icmp eq i32 %t, 42
+  %c19 = icmp eq i32 %h, 42
+  %ok0 = and i1 %c0, %c1
+  %ok1 = and i1 %ok0, %c2
+  %ok2 = and i1 %ok1, %c3
+  %ok3 = and i1 %ok2, %c4
+  %ok4 = and i1 %ok3, %c5
+  %ok5 = and i1 %ok4, %c6
+  %ok6 = and i1 %ok5, %c7
+  %ok7 = and i1 %ok6, %c8
+  %ok8 = and i1 %ok7, %c9
+  %ok9 = and i1 %ok8, %c10
+  %ok10 = and i1 %ok9, %c11
+  %ok11 = and i1 %ok10, %c12
+  %ok12 = and i1 %ok11, %c13
+  %ok13 = and i1 %ok12, %c14
+  %ok14 = and i1 %ok13, %c15
+  %ok15 = and i1 %ok14, %c16
+  %ok16 = and i1 %ok15, %c17
+  %ok17 = and i1 %ok16, %c18
+  %ok18 = and i1 %ok17, %c19
+  %failed = xor i1 %ok18, true
+  %status = zext i1 %failed to i32
+  ret i32 %status
+}
