@@ -164,6 +164,20 @@ mod tests {
                 let context = Context::create();
                 let mut module = parse(&context, include_str!("../../tests/block_outlining.ir"));
                 super::super::util::set_native_test_target(&module);
+                // Establish that the fixture itself runs on this host before
+                // attributing a native failure to the outlining pass.
+                eprintln!("outline fixture: baseline seed={seed}, level={level:?}");
+                {
+                    let baseline = module.clone();
+                    let engine = baseline.create_jit_execution_engine(level).unwrap();
+                    unsafe {
+                        let main = engine
+                            .get_function::<unsafe extern "C" fn() -> i32>("main")
+                            .unwrap();
+                        assert_eq!(main.call(), 0, "untransformed native fixture");
+                    }
+                }
+                eprintln!("outline fixture: baseline returned");
                 let original_blocks: usize = module
                     .get_functions()
                     .map(|f| f.count_basic_blocks() as usize)
@@ -178,6 +192,7 @@ mod tests {
                     .unwrap(),
                     4
                 );
+                eprintln!("outline fixture: transformed");
                 // Bounds apply to originals, including cyclic/unreachable and
                 // excluded-function blocks, never the helper's new CFG.
                 assert_eq!(counts.considered, original_blocks);
@@ -185,11 +200,13 @@ mod tests {
                 assert_eq!(counts.eligible, 4);
                 assert_eq!(counts.skip_reasons.get("cyclic_block"), Some(&3));
                 let engine = module.create_jit_execution_engine(level).unwrap();
+                eprintln!("outline fixture: JIT created");
                 unsafe {
                     let main = engine
                         .get_function::<unsafe extern "C" fn() -> i32>("main")
                         .unwrap();
                     assert_eq!(main.call(), 0, "seed {seed}, level {level:?}");
+                    eprintln!("outline fixture: transformed main returned");
                     let memory = engine
                         .get_function::<unsafe extern "C" fn(i32, i32, bool, *mut i32) -> i64>(
                             "phi_memory",
