@@ -10,9 +10,11 @@ These protections also apply to administrators. `main` requires linear history;
 direct pushes, force pushes, branch deletion, and merging with pending or failed
 required checks are not allowed.
 
-Every commit subject and PR title must start with `fix(ci): ` followed by a
-short, concrete description, including documentation and dependency changes.
-For example: `fix(ci): validate LLVM SDK versions`.
+Every commit subject and PR title must use the format `type(scope): description`,
+with a lowercase type, a nonempty scope without whitespace or parentheses, and a
+short, concrete description. Choose a type and scope appropriate to the change.
+This includes documentation and dependency changes. Examples:
+`fix(ci): validate LLVM SDK versions` and `docs(contributing): clarify commit format`.
 
 Keep public text concise, neutral, and focused on behavior. Do not include
 private paths, downstream application names, private inputs, or secrets in
