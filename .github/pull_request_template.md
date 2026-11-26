@@ -1,5 +1,5 @@
-Follow the [contribution rules](../CONTRIBUTING.md). Use `fix(ci): ` followed by
-a short description for the PR title and every commit subject.
+Follow the [contribution rules](../CONTRIBUTING.md). Use `type(scope): description`
+for the PR title and every commit subject, with a type and scope appropriate to the change.
 
 ## Changes
 

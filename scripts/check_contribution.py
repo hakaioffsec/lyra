@@ -8,8 +8,8 @@ import subprocess
 import sys
 
 
-EXPECTED = 'fix(ci): <short description>'
-SUBJECT = re.compile(r'fix\(ci\): \S(?:[^\r\n]*\S)?')
+EXPECTED = 'type(scope): <short description>'
+SUBJECT = re.compile(r'[a-z]+\([^()\s]+\): \S(?:[^\r\n]*\S)?')
 SHA = re.compile(r'(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})')
 
 
