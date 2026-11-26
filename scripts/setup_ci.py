@@ -125,6 +125,7 @@ def install_linux(temp: Path) -> Path:
 
 def install_macos() -> Path:
     export("SDKROOT", run("xcrun", "--sdk", "macosx", "--show-sdk-path", capture=True))
+    run("brew", "update")
     formulae = (f"llvm@{LLVM_MAJOR}", f"lld@{LLVM_MAJOR}")
     info = json.loads(run("brew", "info", "--json=v2", *formulae, capture=True))
     for formula in info["formulae"]:
