@@ -36,7 +36,7 @@ use llvm_sys::core::{
     LLVMIsFunctionVarArg, LLVMSetVolatile,
 };
 use llvm_sys::LLVMTailCallKind;
-use rand::{seq::SliceRandom, Rng};
+use rand::{seq::SliceRandom, RngExt};
 use std::collections::HashMap;
 
 use super::coverage::{self, Counts};
@@ -89,7 +89,7 @@ pub fn apply<'ctx>(context: &'ctx Context, module: &mut Module<'ctx>) -> Result<
 fn transform<'ctx>(
     context: &'ctx Context,
     module: &mut Module<'ctx>,
-    rng: &mut impl Rng,
+    rng: &mut impl RngExt,
     mut counts: Option<&mut Counts>,
 ) -> Result<usize> {
     let layout = module.get_data_layout();

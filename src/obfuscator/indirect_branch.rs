@@ -63,7 +63,7 @@ use inkwell::values::{
     Operand, PointerValue,
 };
 use inkwell::{AddressSpace, IntPredicate};
-use rand::Rng;
+use rand::RngExt;
 use std::collections::HashMap;
 
 use crate::obfuscator::coverage::{self, Counts};
@@ -150,7 +150,7 @@ fn transform_function<'ctx>(
     context: &'ctx Context,
     module: &mut Module<'ctx>,
     function: &FunctionValue<'ctx>,
-    rng: &mut impl Rng,
+    rng: &mut impl RngExt,
     mut counts: Option<&mut Counts>,
 ) -> Result<Option<Stats>> {
     // Gather all `br` terminators (conditional + unconditional). Skip
