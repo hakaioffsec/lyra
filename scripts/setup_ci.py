@@ -189,6 +189,13 @@ def install_windows(temp: Path) -> Path:
         if not any((path / library).is_file() for path in search_paths):
             raise RuntimeError(f"LLVM system dependency missing from archive and MSVC SDK: {library}")
     export("LIB", os.pathsep.join(str(path) for path in search_paths))
+    # LLVM's official MSVC archive uses /MT. Rust must use that CRT too.
+    # With crt-static, llvm-sys bundles system import libraries into its rlib;
+    # rustc needs explicit native search paths, not only the linker's LIB.
+    # Encoded flags keep SDK paths containing spaces as single arguments.
+    rustflags = ["-C", "target-feature=+crt-static"]
+    rustflags.extend(f"-Lnative={path}" for path in search_paths)
+    export("CARGO_ENCODED_RUSTFLAGS", "\x1f".join(rustflags))
     return prefix
 
 

@@ -140,15 +140,20 @@ export LLVM_SYS_221_PREFIX=/usr
 Windows: download the official LLVM 22.1.4 prebuilt bundle
 (`clang+llvm-22.1.4-x86_64-pc-windows-msvc.tar.xz`) from the
 llvm-project releases page, extract it to `llvm-project-22`, and place
-an empty `xml2s.lib` in `llvm-project-22/build/lib`. Then:
+an empty `xml2s.lib` in `llvm-project-22/build/lib`. In an x64 Visual Studio
+developer shell (where `LIB` contains the native SDK directories), configure:
 
 ```powershell
 $env:LLVM_SYS_221_PREFIX = "$(Get-Location)\llvm-project-22\build"
+$rustFlags = @("-C", "target-feature=+crt-static")
+$rustFlags += ($env:LIB -split ";" | Where-Object { $_ } | ForEach-Object { "-Lnative=$_" })
+$env:CARGO_ENCODED_RUSTFLAGS = $rustFlags -join [char]0x1f
 ```
 
-This bundle uses the static MSVC runtime (`/MT`). The C++ outlining shim
-uses the same runtime; mixing it with `/MD` produces `LNK2038` runtime
-mismatches and duplicate C/C++ runtime symbols.
+This bundle uses the static MSVC runtime (`/MT`). Both Rust and the C++
+outlining shim must use that runtime. Explicit native SDK search paths let
+`llvm-sys` locate system import libraries when using `crt-static`; encoded
+flags preserve paths containing spaces. The CI setup performs these steps.
 
 ## Build
 
