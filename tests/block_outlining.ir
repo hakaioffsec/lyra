@@ -204,7 +204,8 @@ done:
   ret i32 %v
 }
 
-; No external runtime dependency: the nonthrowing path never calls personality.
+; Keep an EH pad to test exclusion, without depending on an Itanium unwinder.
+; The leaf cannot throw; an unexpected exceptional path must fail main's oracle.
 define i32 @personality(...) {
   ret i32 0
 }
@@ -225,7 +226,7 @@ done:
   ret i32 %r
 landing:
   %exception = landingpad { ptr, i32 } cleanup
-  resume { ptr, i32 } %exception
+  ret i32 -1
 }
 
 define i32 @main() {
